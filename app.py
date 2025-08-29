@@ -2,16 +2,19 @@
 
 import streamlit as st
 import pandas as pd
-import openai
 from io import BytesIO
 from dotenv import load_dotenv
 import os
+import openai
 
 # --------------------------
 # Load environment variables
 # --------------------------
 load_dotenv()
-openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Initialize new OpenAI client
+client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # --------------------------
 # Streamlit App Setup
@@ -108,15 +111,15 @@ Category: "{category}"
 Subcategory: "{subcategory}"
 Product Category: "{product_category}"
 Return as a comma-separated string: direct_translation, variant1, variant2,...
-"""
+""
 
             try:
-                response = openai.ChatCompletion.create(
+                response = client.chat.completions.create(
                     model="gpt-4",
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.3
                 )
-                translation_text = response["choices"][0]["message"]["content"].strip()
+                translation_text = response.choices[0].message.content.strip()
                 translations = [t.strip() for t in translation_text.split(",")]
                 translated_keywords.append([keyword, category, subcategory, product_category] + translations)
                 translated_count += 1
@@ -156,4 +159,4 @@ Return as a comma-separated string: direct_translation, variant1, variant2,...
 
         st.dataframe(translated_df)
 
-st.info("💡 Note: Make sure your OpenAI API key is set in your .env file as OPENAI_API_KEY.")
+st.info("💡 Make sure your OpenAI API key is set in your .env file as OPENAI_API_KEY.")
