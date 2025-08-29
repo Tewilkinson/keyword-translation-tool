@@ -21,7 +21,7 @@ client = openai.OpenAI(api_key=OPENAI_API_KEY)
 # Streamlit App Setup
 # --------------------------
 st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
-st.title("Keyword Translation Tool 🌐")
+st.title("Keyword Translation Tool")
 st.write("Upload your keyword file, select a language, and translate while keeping category alignment intact.")
 
 # --------------------------
@@ -34,7 +34,7 @@ with pd.ExcelWriter(output_template, engine="openpyxl") as writer:
 output_template.seek(0)
 
 st.download_button(
-    label="📥 Download Excel Template",
+    label="Download Excel Template",
     data=output_template,
     file_name="keyword_template.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
