@@ -1,4 +1,4 @@
-# keyword_translator_dashboard.py
+# keyword_translation_tool.py
 
 import streamlit as st
 import pandas as pd
@@ -14,14 +14,14 @@ load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 # --------------------------
-# Streamlit App
+# Streamlit App Setup
 # --------------------------
 st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
 st.title("Keyword Translation Tool 🌐")
 st.write("Upload your keyword file, select a language, and translate while keeping category alignment intact.")
 
 # --------------------------
-# Step 1: Download template
+# Step 1: Download Template
 # --------------------------
 st.subheader("Download Template")
 template_df = pd.DataFrame(columns=["Keyword", "Category", "Subcategory", "Product Category"])
@@ -38,13 +38,13 @@ st.download_button(
 )
 
 # --------------------------
-# Step 2: Upload file
+# Step 2: Upload File
 # --------------------------
 st.subheader("Upload Your Keyword File")
 uploaded_file = st.file_uploader("Upload your filled Excel file", type=["xlsx"])
 
 # --------------------------
-# Step 3: Select target language
+# Step 3: Select Target Language
 # --------------------------
 target_language = st.selectbox(
     "Choose a language to translate keywords into",
@@ -52,20 +52,20 @@ target_language = st.selectbox(
 )
 
 # --------------------------
-# Initialize dashboard variables
+# Step 4: Initialize dashboard variables
 # --------------------------
 keywords_loaded = 0
 translated_count = 0
 est_cost = 0.0
+df = None
 
 # --------------------------
-# Step 4: Show estimated cost
+# Step 5: Load uploaded file and estimate cost
 # --------------------------
 def estimate_cost(n_keywords):
     # Example: $0.0004 per word
     return round(n_keywords * 0.0004, 4)
 
-df = None
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
@@ -75,7 +75,7 @@ if uploaded_file:
         st.error(f"Error reading file: {e}")
 
 # --------------------------
-# Dashboard at the top
+# Step 6: Dashboard at the top
 # --------------------------
 st.subheader("Translation Dashboard")
 col1, col2, col3 = st.columns(3)
@@ -84,7 +84,7 @@ col2.metric("Translated Keywords", translated_count)
 col3.metric("Estimated Cost (USD)", f"${est_cost}")
 
 # --------------------------
-# Step 5: Translate
+# Step 7: Translate Keywords
 # --------------------------
 st.subheader("Translate Keywords")
 
@@ -123,9 +123,15 @@ Return as a comma-separated string: direct_translation, variant1, variant2,...
             except Exception as e:
                 translated_keywords.append([keyword, category, subcategory, product_category, f"Error: {e}"])
 
-        # Create translated DataFrame
-        max_cols = max(len(t) for t in translated_keywords)
-        columns = ["Keyword", "Category", "Subcategory", "Product Category"] + [f"Translation_{i}" for i in range(1, max_cols - 3 + 1)]
+        # Determine max translations per row
+        max_translations = max(len(t) for t in translated_keywords)
+        columns = ["Keyword", "Category", "Subcategory", "Product Category"] + [f"Translation_{i}" for i in range(1, max_translations - 3 + 1)]
+
+        # Pad each row to have same length as columns
+        for i in range(len(translated_keywords)):
+            while len(translated_keywords[i]) < len(columns):
+                translated_keywords[i].append("")
+
         translated_df = pd.DataFrame(translated_keywords, columns=columns)
 
         # Update dashboard metrics
@@ -134,7 +140,7 @@ Return as a comma-separated string: direct_translation, variant1, variant2,...
         st.success("✅ Translation complete!")
 
         # --------------------------
-        # Step 6: Download translated file
+        # Step 8: Download Translated Excel
         # --------------------------
         output_translated = BytesIO()
         with pd.ExcelWriter(output_translated, engine="openpyxl") as writer:
