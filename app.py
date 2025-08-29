@@ -164,4 +164,3 @@ if df is not None and st.button("Translate Keywords"):
 
         st.dataframe(translated_df)
 
-st.info("💡 Make sure your OpenAI API key is set in your .env file as OPENAI_API_KEY.")
