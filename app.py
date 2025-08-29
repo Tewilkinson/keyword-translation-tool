@@ -101,7 +101,7 @@ if df is not None and st.button("Translate Keywords"):
             subcategory = row.get("Subcategory", "")
             product_category = row.get("Product Category", "")
 
-            prompt = f""
+            prompt = (
 Translate the following keyword into {target_language}. Provide:
 1. Direct translation
 2. Other known variations (synonyms, commonly used phrases)
@@ -111,7 +111,7 @@ Category: "{category}"
 Subcategory: "{subcategory}"
 Product Category: "{product_category}"
 Return as a comma-separated string: direct_translation, variant1, variant2,...
-""
+)
 
             try:
                 response = client.chat.completions.create(
