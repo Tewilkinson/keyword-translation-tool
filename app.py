@@ -54,7 +54,7 @@ target_language = st.selectbox(
 )
 
 # --------------------------
-# Step 4: Load uploaded file
+# Step 4: Load uploaded file and estimate cost
 # --------------------------
 df = None
 keywords_loaded = 0
@@ -65,6 +65,13 @@ if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
         keywords_loaded = len(df)
+        # --------------------------
+        # Pre-estimate cost for the uploaded keywords
+        # --------------------------
+        # Rough estimation: 20 tokens per prompt per keyword, 2 translations at 10 tokens each
+        tokens_per_keyword = 20 + 2 * 10
+        est_cost = (tokens_per_keyword * keywords_loaded / 1000) * 0.06  # $0.06 per 1k tokens GPT-4
+
     except Exception as e:
         st.error(f"Error reading file: {e}")
 
@@ -84,7 +91,6 @@ st.subheader("Translate Keywords")
 if df is not None and st.button("Translate Keywords"):
     translated_keywords = []
     translated_count = 0
-
     progress_bar = st.progress(0)
     total_keywords = len(df)
 
@@ -115,16 +121,13 @@ if df is not None and st.button("Translate Keywords"):
                     temperature=0.3
                 )
                 translation_text = response.choices[0].message.content.strip()
-                translations = [t.strip() for t in translation_text.split(",")][:2]  # Only 2 variants
+                translations = [t.strip().replace('"', '').replace("'", "") for t in translation_text.split(",")][:2]  # Remove quotes
                 translated_keywords.append([keyword, category, subcategory, product_category] + translations)
                 translated_count += 1
 
-                # Estimate tokens roughly: 1 keyword ~ 20 tokens in prompt, 2 translations ~ 10 tokens
-                est_cost += ((20 + 10) / 1000) * 0.06  # $0.06 per 1k tokens GPT-4
-
             except Exception as e:
                 translated_keywords.append([keyword, category, subcategory, product_category, f"Error: {e}"])
-            
+
             progress_bar.progress((idx + 1) / total_keywords)
 
         # --------------------------
@@ -161,3 +164,4 @@ if df is not None and st.button("Translate Keywords"):
 
         st.dataframe(translated_df)
 
+st.info("💡 Make sure your OpenAI API key is set in your .env file as OPENAI_API_KEY.")
