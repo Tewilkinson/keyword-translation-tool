@@ -1,4 +1,4 @@
-# keyword_translation_tool.py
+# app.py
 
 import streamlit as st
 import pandas as pd
@@ -66,7 +66,7 @@ df = None
 # Step 5: Load uploaded file and estimate cost
 # --------------------------
 def estimate_cost(n_keywords):
-    # Example: $0.0004 per word
+    # Example: $0.0004 per keyword
     return round(n_keywords * 0.0004, 4)
 
 if uploaded_file:
@@ -101,17 +101,20 @@ if df is not None and st.button("Translate Keywords"):
             subcategory = row.get("Subcategory", "")
             product_category = row.get("Product Category", "")
 
+            # --------------------------
+            # Fixed prompt using safe f-string
+            # --------------------------
             prompt = (
-Translate the following keyword into {target_language}. Provide:
-1. Direct translation
-2. Other known variations (synonyms, commonly used phrases)
-Keep it aligned with the original category structure.
-Keyword: "{keyword}"
-Category: "{category}"
-Subcategory: "{subcategory}"
-Product Category: "{product_category}"
-Return as a comma-separated string: direct_translation, variant1, variant2,...
-)
+                f"Translate the following keyword into {target_language}. Provide:\n"
+                f"1. Direct translation\n"
+                f"2. Other known variations (synonyms, commonly used phrases)\n"
+                f"Keep it aligned with the original category structure.\n"
+                f"Keyword: \"{keyword}\"\n"
+                f"Category: \"{category}\"\n"
+                f"Subcategory: \"{subcategory}\"\n"
+                f"Product Category: \"{product_category}\"\n"
+                f"Return as a comma-separated string: direct_translation, variant1, variant2,..."
+            )
 
             try:
                 response = client.chat.completions.create(
