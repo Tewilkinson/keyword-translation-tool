@@ -6,6 +6,7 @@ from io import BytesIO
 from dotenv import load_dotenv
 import os
 import openai
+import math
 
 # --------------------------
 # Load environment variables
@@ -13,7 +14,7 @@ import openai
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize new OpenAI client
+# Initialize OpenAI client (v1 API)
 client = openai.OpenAI(api_key=OPENAI_API_KEY)
 
 # --------------------------
@@ -26,7 +27,6 @@ st.write("Upload your keyword file, select a language, and translate while keepi
 # --------------------------
 # Step 1: Download Template
 # --------------------------
-st.subheader("Download Template")
 template_df = pd.DataFrame(columns=["Keyword", "Category", "Subcategory", "Product Category"])
 output_template = BytesIO()
 with pd.ExcelWriter(output_template, engine="openpyxl") as writer:
@@ -43,7 +43,6 @@ st.download_button(
 # --------------------------
 # Step 2: Upload File
 # --------------------------
-st.subheader("Upload Your Keyword File")
 uploaded_file = st.file_uploader("Upload your filled Excel file", type=["xlsx"])
 
 # --------------------------
@@ -55,65 +54,58 @@ target_language = st.selectbox(
 )
 
 # --------------------------
-# Step 4: Initialize dashboard variables
+# Step 4: Load uploaded file
 # --------------------------
+df = None
 keywords_loaded = 0
 translated_count = 0
 est_cost = 0.0
-df = None
-
-# --------------------------
-# Step 5: Load uploaded file and estimate cost
-# --------------------------
-def estimate_cost(n_keywords):
-    # Example: $0.0004 per keyword
-    return round(n_keywords * 0.0004, 4)
 
 if uploaded_file:
     try:
         df = pd.read_excel(uploaded_file)
         keywords_loaded = len(df)
-        est_cost = estimate_cost(keywords_loaded)
     except Exception as e:
         st.error(f"Error reading file: {e}")
 
 # --------------------------
-# Step 6: Dashboard at the top
+# Step 5: Dashboard cards at top
 # --------------------------
-st.subheader("Translation Dashboard")
 col1, col2, col3 = st.columns(3)
-col1.metric("Keywords Loaded", keywords_loaded)
-col2.metric("Translated Keywords", translated_count)
-col3.metric("Estimated Cost (USD)", f"${est_cost}")
+keywords_card = col1.metric("Keywords Loaded", keywords_loaded)
+translated_card = col2.metric("Translated Keywords", translated_count)
+cost_card = col3.metric("Estimated Cost (USD)", f"${est_cost:.4f}")
 
 # --------------------------
-# Step 7: Translate Keywords
+# Step 6: Translate Keywords
 # --------------------------
 st.subheader("Translate Keywords")
 
 if df is not None and st.button("Translate Keywords"):
     translated_keywords = []
     translated_count = 0
+
+    progress_bar = st.progress(0)
+    total_keywords = len(df)
+
     with st.spinner("Translating keywords..."):
-        for _, row in df.iterrows():
+        for idx, row in df.iterrows():
             keyword = row["Keyword"]
             category = row.get("Category", "")
             subcategory = row.get("Subcategory", "")
             product_category = row.get("Product Category", "")
 
-            # --------------------------
-            # Fixed prompt using safe f-string
-            # --------------------------
+            # Prompt for translation - limit to 2 variants
             prompt = (
                 f"Translate the following keyword into {target_language}. Provide:\n"
                 f"1. Direct translation\n"
-                f"2. Other known variations (synonyms, commonly used phrases)\n"
+                f"2. One other known variation (synonym or commonly used phrase)\n"
                 f"Keep it aligned with the original category structure.\n"
                 f"Keyword: \"{keyword}\"\n"
                 f"Category: \"{category}\"\n"
                 f"Subcategory: \"{subcategory}\"\n"
                 f"Product Category: \"{product_category}\"\n"
-                f"Return as a comma-separated string: direct_translation, variant1, variant2,..."
+                f"Return as a comma-separated string: direct_translation, variant"
             )
 
             try:
@@ -123,30 +115,37 @@ if df is not None and st.button("Translate Keywords"):
                     temperature=0.3
                 )
                 translation_text = response.choices[0].message.content.strip()
-                translations = [t.strip() for t in translation_text.split(",")]
+                translations = [t.strip() for t in translation_text.split(",")][:2]  # Only 2 variants
                 translated_keywords.append([keyword, category, subcategory, product_category] + translations)
                 translated_count += 1
+
+                # Estimate tokens roughly: 1 keyword ~ 20 tokens in prompt, 2 translations ~ 10 tokens
+                est_cost += ((20 + 10) / 1000) * 0.06  # $0.06 per 1k tokens GPT-4
+
             except Exception as e:
                 translated_keywords.append([keyword, category, subcategory, product_category, f"Error: {e}"])
+            
+            progress_bar.progress((idx + 1) / total_keywords)
 
-        # Determine max translations per row
-        max_translations = max(len(t) for t in translated_keywords)
-        columns = ["Keyword", "Category", "Subcategory", "Product Category"] + [f"Translation_{i}" for i in range(1, max_translations - 3 + 1)]
-
-        # Pad each row to have same length as columns
+        # --------------------------
+        # Pad rows to same length
+        # --------------------------
+        max_cols = 6  # 4 original + 2 translations
         for i in range(len(translated_keywords)):
-            while len(translated_keywords[i]) < len(columns):
+            while len(translated_keywords[i]) < max_cols:
                 translated_keywords[i].append("")
 
+        columns = ["Keyword", "Category", "Subcategory", "Product Category", "Translation_1", "Translation_2"]
         translated_df = pd.DataFrame(translated_keywords, columns=columns)
 
-        # Update dashboard metrics
-        col2.metric("Translated Keywords", translated_count)
+        # Update dashboard cards
+        translated_card.metric("Translated Keywords", translated_count)
+        cost_card.metric("Estimated Cost (USD)", f"${est_cost:.4f}")
 
         st.success("✅ Translation complete!")
 
         # --------------------------
-        # Step 8: Download Translated Excel
+        # Step 7: Download Translated Excel
         # --------------------------
         output_translated = BytesIO()
         with pd.ExcelWriter(output_translated, engine="openpyxl") as writer:
@@ -162,4 +161,3 @@ if df is not None and st.button("Translate Keywords"):
 
         st.dataframe(translated_df)
 
-st.info("💡 Make sure your OpenAI API key is set in your .env file as OPENAI_API_KEY.")
