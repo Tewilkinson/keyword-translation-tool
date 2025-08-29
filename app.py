@@ -101,7 +101,7 @@ if df is not None and st.button("Translate Keywords"):
             subcategory = row.get("Subcategory", "")
             product_category = row.get("Product Category", "")
 
-            prompt = f"""
+            prompt = f""
 Translate the following keyword into {target_language}. Provide:
 1. Direct translation
 2. Other known variations (synonyms, commonly used phrases)
