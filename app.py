@@ -85,7 +85,7 @@ with tabs[1]:
         if "translated_to" not in display_df.columns:
             display_df["translated_to"] = "N/A"
 
-        # Prepare display DataFrame without the download column
+        # Prepare display DataFrame
         display_df_display = display_df.rename(columns={
             "input_file": "File Name",
             "translated_to": "Translated To",
@@ -95,23 +95,44 @@ with tabs[1]:
 
         st.dataframe(display_df_display, use_container_width=True)
 
-        st.markdown("### Downloads")
-        for idx, row in display_df.iterrows():
-            file_path = os.path.join(OUTPUT_DIR, row["output_file"])
-            if os.path.exists(file_path):
-                st.download_button(
-                    label=f"{row['input_file']}",
-                    data=open(file_path, "rb").read(),
-                    file_name=row["output_file"],
-                    key=f"download_{idx}"
-                )
-
-        # Download full CSV
-        st.download_button(
-            label="Download Full Historical Report (CSV)",
-            data=open(JOBS_LOG, "rb").read(),
-            file_name="translation_jobs_history.csv",
-            mime="text/csv"
+        # Dropdown to select report
+        st.markdown("### Download or Delete Historical Report")
+        selected_file = st.selectbox(
+            "Select a report",
+            options=display_df["output_file"].tolist(),
+            format_func=lambda x: x
         )
+
+        # One download button
+        file_path = os.path.join(OUTPUT_DIR, selected_file)
+        if os.path.exists(file_path):
+            st.download_button(
+                label=f"Download {selected_file}",
+                data=open(file_path, "rb").read(),
+                file_name=selected_file,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.error("File not found. It may have been deleted.")
+
+        # Delete button with confirmation modal
+        if st.button("Delete Selected Report"):
+            # Modal for confirmation
+            with st.modal("Confirm Deletion"):
+                st.warning(f"Are you sure you want to delete '{selected_file}' and all its historical data?")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("Yes, Delete"):
+                        # Delete file
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        # Remove from log
+                        log_df = log_df[log_df["output_file"] != selected_file]
+                        log_df.to_csv(JOBS_LOG, index=False)
+                        st.success(f"'{selected_file}' deleted successfully.")
+                        st.experimental_rerun()  # Refresh app
+                with col_no:
+                    if st.button("Cancel"):
+                        st.info("Deletion cancelled.")
     else:
         st.info("No translation jobs found yet.")
