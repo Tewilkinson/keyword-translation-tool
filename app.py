@@ -1,31 +1,60 @@
-# app.py
-
 import streamlit as st
 import pandas as pd
 from io import BytesIO
-from dotenv import load_dotenv
 import os
-import openai
-import math
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from dotenv import load_dotenv
+import subprocess
 
-# --------------------------
-# Load environment variables
-# --------------------------
 load_dotenv()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Initialize OpenAI client (v1 API)
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+UPLOAD_DIR = "uploads"
+OUTPUT_DIR = "outputs"
+DB_FILE = "jobs.db"
 
-# --------------------------
-# Streamlit App Setup
-# --------------------------
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# Initialize SQLite DB
+conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+c = conn.cursor()
+c.execute("""
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    filename TEXT,
+    target_language TEXT,
+    status TEXT,
+    created_at TEXT,
+    output_file TEXT
+)
+""")
+conn.commit()
+
 st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
-st.title("Keyword Translation Tool")
-st.write("Upload your keyword file, select a language, and translate while keeping category alignment intact.")
+st.title("Keyword Translation Tool - Manual Job Execution 🌐")
 
 # --------------------------
-# Step 1: Download Template
+# Dashboard Scorecards
+# --------------------------
+c.execute("SELECT COUNT(*) FROM jobs")
+total_jobs = c.fetchone()[0]
+
+c.execute("SELECT COUNT(*) FROM jobs WHERE status='Completed'")
+completed_jobs = c.fetchone()[0]
+
+c.execute("SELECT COUNT(*) FROM jobs WHERE status='Pending'")
+pending_jobs = c.fetchone()[0]
+
+st.subheader("Job Dashboard")
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Jobs", total_jobs)
+col2.metric("Completed Jobs", completed_jobs)
+col3.metric("Pending Jobs", pending_jobs)
+
+# --------------------------
+# Download Template
 # --------------------------
 template_df = pd.DataFrame(columns=["Keyword", "Category", "Subcategory", "Product Category"])
 output_template = BytesIO()
@@ -34,133 +63,66 @@ with pd.ExcelWriter(output_template, engine="openpyxl") as writer:
 output_template.seek(0)
 
 st.download_button(
-    label="Download Excel Template",
+    label="📥 Download Excel Template",
     data=output_template,
     file_name="keyword_template.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
 # --------------------------
-# Step 2: Upload File
+# Upload File
 # --------------------------
 uploaded_file = st.file_uploader("Upload your filled Excel file", type=["xlsx"])
 
-# --------------------------
-# Step 3: Select Target Language
-# --------------------------
 target_language = st.selectbox(
     "Choose a language to translate keywords into",
     ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "Russian"]
 )
 
-# --------------------------
-# Step 4: Load uploaded file and estimate cost
-# --------------------------
-df = None
-keywords_loaded = 0
-translated_count = 0
-est_cost = 0.0
-
-if uploaded_file:
-    try:
-        df = pd.read_excel(uploaded_file)
-        keywords_loaded = len(df)
-        # --------------------------
-        # Pre-estimate cost for the uploaded keywords
-        # --------------------------
-        # Rough estimation: 20 tokens per prompt per keyword, 2 translations at 10 tokens each
-        tokens_per_keyword = 20 + 2 * 10
-        est_cost = (tokens_per_keyword * keywords_loaded / 1000) * 0.06  # $0.06 per 1k tokens GPT-4
-
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
+if uploaded_file and st.button("Submit Translation Job"):
+    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    # Insert job into DB
+    c.execute(
+        "INSERT INTO jobs (filename, target_language, status, created_at) VALUES (?, ?, ?, ?)",
+        (filename, target_language, "Pending", datetime.now().isoformat())
+    )
+    conn.commit()
+    st.success(f"✅ Job submitted! It is now pending execution.")
 
 # --------------------------
-# Step 5: Dashboard cards at top
+# Run Pending Job Manually
 # --------------------------
-col1, col2, col3 = st.columns(3)
-keywords_card = col1.metric("Keywords Loaded", keywords_loaded)
-translated_card = col2.metric("Translated Keywords", translated_count)
-cost_card = col3.metric("Estimated Cost (USD)", f"${est_cost:.4f}")
+st.subheader("Run Pending Translation Job")
+c.execute("SELECT * FROM jobs WHERE status='Pending'")
+pending_jobs_df = pd.DataFrame(c.fetchall(), columns=[desc[0] for desc in c.description])
+
+if not pending_jobs_df.empty:
+    selected_job_id = st.selectbox("Select Job ID to Run", pending_jobs_df['id'])
+    if st.button("Run Selected Job"):
+        subprocess.Popen(["python", "worker.py", str(selected_job_id)])
+        st.info(f"🛠 Job {selected_job_id} started. It will run in background.")
+else:
+    st.info("No pending jobs to run.")
 
 # --------------------------
-# Step 6: Translate Keywords
+# Completed Jobs
 # --------------------------
-st.subheader("Translate Keywords")
+st.subheader("Completed Translations")
+c.execute("SELECT * FROM jobs WHERE status='Completed' ORDER BY created_at DESC")
+completed_jobs_df = pd.DataFrame(c.fetchall(), columns=[desc[0] for desc in c.description])
 
-if df is not None and st.button("Translate Keywords"):
-    translated_keywords = []
-    translated_count = 0
-    progress_bar = st.progress(0)
-    total_keywords = len(df)
-
-    with st.spinner("Translating keywords..."):
-        for idx, row in df.iterrows():
-            keyword = row["Keyword"]
-            category = row.get("Category", "")
-            subcategory = row.get("Subcategory", "")
-            product_category = row.get("Product Category", "")
-
-            # Prompt for translation - limit to 2 variants
-            prompt = (
-                f"Translate the following keyword into {target_language}. Provide:\n"
-                f"1. Direct translation\n"
-                f"2. One other known variation (synonym or commonly used phrase)\n"
-                f"Keep it aligned with the original category structure.\n"
-                f"Keyword: \"{keyword}\"\n"
-                f"Category: \"{category}\"\n"
-                f"Subcategory: \"{subcategory}\"\n"
-                f"Product Category: \"{product_category}\"\n"
-                f"Return as a comma-separated string: direct_translation, variant"
-            )
-
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3
+if not completed_jobs_df.empty:
+    st.dataframe(completed_jobs_df)
+    for idx, row in completed_jobs_df.iterrows():
+        if row['output_file']:
+            download_path = os.path.join(OUTPUT_DIR, row['output_file'])
+            if os.path.exists(download_path):
+                st.download_button(
+                    label=f"📥 Download {row['output_file']}",
+                    data=open(download_path, "rb").read(),
+                    file_name=row['output_file'],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-                translation_text = response.choices[0].message.content.strip()
-                translations = [t.strip().replace('"', '').replace("'", "") for t in translation_text.split(",")][:2]  # Remove quotes
-                translated_keywords.append([keyword, category, subcategory, product_category] + translations)
-                translated_count += 1
-
-            except Exception as e:
-                translated_keywords.append([keyword, category, subcategory, product_category, f"Error: {e}"])
-
-            progress_bar.progress((idx + 1) / total_keywords)
-
-        # --------------------------
-        # Pad rows to same length
-        # --------------------------
-        max_cols = 6  # 4 original + 2 translations
-        for i in range(len(translated_keywords)):
-            while len(translated_keywords[i]) < max_cols:
-                translated_keywords[i].append("")
-
-        columns = ["Keyword", "Category", "Subcategory", "Product Category", "Translation_1", "Translation_2"]
-        translated_df = pd.DataFrame(translated_keywords, columns=columns)
-
-        # Update dashboard cards
-        translated_card.metric("Translated Keywords", translated_count)
-        cost_card.metric("Estimated Cost (USD)", f"${est_cost:.4f}")
-
-        st.success("✅ Translation complete!")
-
-        # --------------------------
-        # Step 7: Download Translated Excel
-        # --------------------------
-        output_translated = BytesIO()
-        with pd.ExcelWriter(output_translated, engine="openpyxl") as writer:
-            translated_df.to_excel(writer, index=False, sheet_name="Translated Keywords")
-        output_translated.seek(0)
-
-        st.download_button(
-            label="📥 Download Translated Excel",
-            data=output_translated,
-            file_name=f"translated_keywords_{target_language}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-
-        st.dataframe(translated_df)
-
