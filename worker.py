@@ -4,6 +4,8 @@ import re
 from tqdm import tqdm
 from openai import OpenAI
 from dotenv import load_dotenv
+import csv
+from datetime import datetime
 
 load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -47,7 +49,19 @@ def run_translation_job(file_path, target_language):
     # Keep original columns aligned
     output_df = pd.concat([df.reset_index(drop=True), translated_df], axis=1)
 
-    # Output file
+    # Save output Excel
+    if not os.path.exists("outputs"):
+        os.makedirs("outputs")
     output_file = os.path.join("outputs", f"translated_{os.path.basename(file_path)}")
     output_df.to_excel(output_file, index=False)
+
+    # Log job to CSV
+    log_file = "jobs_log.csv"
+    file_exists = os.path.exists(log_file)
+    with open(log_file, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "input_file", "output_file", "target_language"])
+        writer.writerow([datetime.now(), os.path.basename(file_path), os.path.basename(output_file), target_language])
+
     return output_file
