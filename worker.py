@@ -5,113 +5,110 @@ import sys
 import time
 import json
 import openai
-import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client
+import pandas as pd
 
 # ---------------------
-# Setup
+# Load environment variables
 # ---------------------
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-openai.api_key = OPENAI_API_KEY
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+openai.api_key = OPENAI_API_KEY
 
 # ---------------------
 # Helpers
 # ---------------------
-def chunk_list(lst, n):
-    """Split list into n-sized chunks."""
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-def clean_translation(text):
-    return text.replace('"', '').replace("'", "").strip()
-
 def get_project_language(project_id):
-    resp = supabase.table("translation_projects").select("language").eq("id", project_id).execute()
-    return resp.data[0]["language"] if resp.data else "English"
+    res = supabase.table("translation_projects").select("language").eq("id", project_id).execute()
+    return res.data[0]["language"] if res.data else "English"
 
 def update_status(project_id, status):
     supabase.table("translation_projects").update({"status": status}).eq("id", project_id).execute()
 
+def clean(text):
+    return text.replace('"', '').replace("'", '').strip()
+
 # ---------------------
-# Main Translation Runner
+# Translation logic
 # ---------------------
 def run_translation(project_id):
-    print(f"🚀 Starting project {project_id}")
+    print(f"\n🚀 Running translation for project {project_id}")
     update_status(project_id, "Running")
 
-    # Get project language
     language = get_project_language(project_id)
+    print(f"🌍 Target language: {language}")
 
     # Fetch all keywords
     rows = supabase.table("translation_keywords").select("*").eq("project_id", project_id).execute().data
-    df = pd.DataFrame(rows)
 
-    if df.empty:
+    if not rows:
         print("❌ No keywords found.")
         update_status(project_id, "Error")
         return
 
-    translated_var1 = []
-    translated_var2 = []
+    for i, row in enumerate(rows, 1):
+        keyword = row.get("keyword", "")
+        if not keyword:
+            continue
 
-    keywords = df["keyword"].tolist()
-    chunk_size = 50
-    total_chunks = len(list(chunk_list(keywords, chunk_size)))
-
-    for i, chunk in enumerate(chunk_list(keywords, chunk_size), 1):
         prompt = f"""
-You are a multilingual SEO expert. Translate the following keywords into {language} as a native speaker would search them on Google. 
-Return only the translated keywords in the same order, no explanations, in JSON format as a list of strings.
+You are an SEO expert. Translate the following keyword into {language} as a native speaker would search it on Google.
 
-Keywords: {chunk}
+Keyword: {keyword}
 
-Format: ["translation1", "translation2", "..."]
+Respond only with valid JSON:
+{{
+  "translated_keyword": "...",
+  "translated_variable_2": "..."
+}}
         """
 
         try:
+            print(f"\n[{i}] 🔄 Translating: {keyword}")
             response = openai.ChatCompletion.create(
                 model="gpt-4",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.5,
+                messages=[
+                    {"role": "system", "content": "Only respond in valid JSON format."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5
             )
-            content = response.choices[0].message.content.strip()
-            print(f"[{i}/{total_chunks}] Raw output:", content)
 
-            # Try to parse JSON
-            translated_chunk = json.loads(content)
-            translated_var1.extend([clean_translation(k) for k in translated_chunk])
-            translated_var2.extend([clean_translation(k) + " alt" for k in translated_chunk])  # Fake alt variant
+            raw = response.choices[0].message.content.strip()
+            print(f"[{i}] 📥 GPT response:\n{raw}")
+
+            try:
+                data = json.loads(raw)
+                var1 = clean(data.get("translated_keyword", keyword))
+                var2 = clean(data.get("translated_variable_2", keyword + " alt"))
+            except json.JSONDecodeError:
+                print(f"[{i}] ⚠️ Failed to parse JSON, using fallback.")
+                var1 = keyword
+                var2 = keyword + " alt"
+
+            # Update in Supabase
+            update_resp = supabase.table("translation_keywords").update({
+                "translated_var1": var1,
+                "translated_var2": var2
+            }).eq("id", row["id"]).execute()
+
+            print(f"[{i}] ✅ Updated row ID {row['id']} → {var1} | {var2}")
+            time.sleep(1)
 
         except Exception as e:
-            print(f"❌ Error in chunk {i}: {e}")
-            translated_var1.extend([kw for kw in chunk])
-            translated_var2.extend([kw for kw in chunk])
-            time.sleep(2)
-
-        time.sleep(1)
-
-    # Apply translations
-    df["translated_var1"] = translated_var1[:len(df)]
-    df["translated_var2"] = translated_var2[:len(df)]
-
-    # Update Supabase row-by-row
-    for _, row in df.iterrows():
-        supabase.table("translation_keywords").update({
-            "translated_var1": row["translated_var1"],
-            "translated_var2": row["translated_var2"]
-        }).eq("id", row["id"]).execute()
+            print(f"[{i}] ❌ Error from OpenAI or Supabase: {e}")
+            continue
 
     update_status(project_id, "Completed")
-    print("✅ Translations complete.")
+    print("\n🎉 Translations completed and status set to Completed.\n")
 
 # ---------------------
-# CLI Entry
+# Entrypoint
 # ---------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
@@ -121,4 +118,4 @@ if __name__ == "__main__":
     try:
         run_translation(int(sys.argv[1]))
     except Exception as e:
-        print(f"❌ Failed to run worker: {e}")
+        print(f"❌ Fatal error: {e}")
