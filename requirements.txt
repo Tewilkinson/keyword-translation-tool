@@ -3,3 +3,4 @@ pandas
 openai
 supabase
 python-dotenv
+openpyxl
