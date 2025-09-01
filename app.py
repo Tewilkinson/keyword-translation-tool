@@ -85,7 +85,7 @@ with tabs[1]:
         if "translated_to" not in display_df.columns:
             display_df["translated_to"] = "N/A"
 
-        # Prepare display DataFrame without download links
+        # Prepare display DataFrame
         display_df_display = display_df.rename(columns={
             "input_file": "File Name",
             "translated_to": "Translated To",
@@ -95,7 +95,7 @@ with tabs[1]:
 
         st.dataframe(display_df_display, use_container_width=True)
 
-        # Single download selector
+        # Single dropdown + download
         st.markdown("### Download Historical Report")
         selected_file = st.selectbox(
             "Select a report to download",
@@ -103,16 +103,16 @@ with tabs[1]:
             format_func=lambda x: x
         )
 
-        if st.button("Download Selected Report"):
-            file_path = os.path.join(OUTPUT_DIR, selected_file)
-            if os.path.exists(file_path):
-                st.download_button(
-                    label=f"Download {selected_file}",
-                    data=open(file_path, "rb").read(),
-                    file_name=selected_file,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.error("File not found. It may have been deleted.")
+        # One button always downloads selected report
+        file_path = os.path.join(OUTPUT_DIR, selected_file)
+        if os.path.exists(file_path):
+            st.download_button(
+                label=f"Download {selected_file}",
+                data=open(file_path, "rb").read(),
+                file_name=selected_file,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+        else:
+            st.error("File not found. It may have been deleted.")
     else:
         st.info("No translation jobs found yet.")
