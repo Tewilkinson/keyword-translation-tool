@@ -1,94 +1,105 @@
-import os
-import pandas as pd
 import streamlit as st
+import pandas as pd
+import os
 from datetime import datetime
-from worker import run_translation_job, get_historical_jobs
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
+from worker import run_translation_job  # your server-side worker handling translation
 
-# -----------------------------
-# Setup folders
-# -----------------------------
-UPLOADS_DIR = "uploads"
-OUTPUTS_DIR = "outputs"
+# -------------------------------
+# Setup directories
+# -------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
+LOG_FILE = os.path.join(BASE_DIR, "jobs.db")
+
 os.makedirs(UPLOADS_DIR, exist_ok=True)
 os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
-# -----------------------------
-# Streamlit UI
-# -----------------------------
-st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
+# -------------------------------
+# Load historical jobs
+# -------------------------------
+if os.path.exists(LOG_FILE):
+    log_df = pd.read_csv(LOG_FILE)
+else:
+    log_df = pd.DataFrame(columns=["report_name", "status", "total_keywords", "language", "output_file", "timestamp"])
 
+# -------------------------------
+# Streamlit UI
+# -------------------------------
+st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
 st.title("Keyword Translation Tool")
 
-# -----------------------------
-# Upload & Language Selection
-# -----------------------------
-with st.sidebar:
-    st.header("Upload Keywords")
-    uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
-    target_language = st.selectbox("Select Target Language", ["French", "Spanish", "German", "Italian"])
+# -------------------------------
+# Dashboard KPIs
+# -------------------------------
+st.subheader("Dashboard")
+completed_jobs = len(log_df[log_df['status'] == "Completed"])
+total_keywords_translated = log_df['total_keywords'].sum() if not log_df.empty else 0
+st.metric("Completed Jobs", completed_jobs)
+st.metric("Total Keywords Translated", total_keywords_translated)
 
-# -----------------------------
-# Dashboard Cards
-# -----------------------------
-st.subheader("Translation Dashboard")
-historical_jobs = get_historical_jobs(OUTPUTS_DIR)
+st.markdown("---")
 
-total_jobs = len(historical_jobs)
-completed_jobs = sum(1 for job in historical_jobs if job["status"] == "Completed")
-total_keywords_translated = sum(job["total_keywords"] for job in historical_jobs if job["status"] == "Completed")
+# -------------------------------
+# File upload and translation
+# -------------------------------
+st.subheader("Submit Translation Job")
+uploaded_file = st.file_uploader("Upload Excel with 'keyword' column", type=["xlsx"])
 
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Jobs Submitted", total_jobs)
-col2.metric("Completed Jobs", completed_jobs)
-col3.metric("Total Keywords Translated", total_keywords_translated)
+target_language = st.selectbox("Select Target Language", ["French", "Spanish", "German", "Italian"])
 
-# -----------------------------
-# Run Translation
-# -----------------------------
-if uploaded_file is not None:
-    st.info(f"File uploaded: {uploaded_file.name}")
-
+if uploaded_file:
+    file_path = os.path.join(UPLOADS_DIR, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}")
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    
     if st.button("Run Translation"):
-        # Save uploaded file to uploads folder
-        upload_path = os.path.join(UPLOADS_DIR, uploaded_file.name)
-        with open(upload_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+        with st.spinner("Running translation job..."):
+            try:
+                output_file, progress_callback = run_translation_job(file_path, target_language)
+                
+                # Add to logs
+                new_log = {
+                    "report_name": uploaded_file.name,
+                    "status": "Completed",
+                    "total_keywords": progress_callback['total'],
+                    "language": target_language,
+                    "output_file": output_file,
+                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                }
+                log_df = pd.concat([log_df, pd.DataFrame([new_log])], ignore_index=True)
+                log_df.to_csv(LOG_FILE, index=False)
+                
+                st.success(f"Translation completed! Output: {output_file}")
+            except Exception as e:
+                st.error(f"Error running translation: {e}")
 
-        # Run the job
-        with st.spinner("Translating keywords... this may take a while for large files"):
-            output_file, progress_callback = run_translation_job(upload_path, target_language)
+st.markdown("---")
 
-        st.success(f"Translation completed: {output_file}")
-        st.download_button(
-            "Download Translated File",
-            data=open(output_file, "rb").read(),
-            file_name=os.path.basename(output_file)
-        )
-
-# -----------------------------
+# -------------------------------
 # Historical Reports Table
-# -----------------------------
+# -------------------------------
 st.subheader("Historical Reports")
 
-if historical_jobs:
-    df = pd.DataFrame(historical_jobs)
-
-    # Add download links
-    df["Download"] = df["output_file"].apply(lambda x: f"[Download]({x})" if os.path.exists(x) else "")
-
-    # Select columns to show
-    df_display = df[["report_name", "status", "total_keywords", "language", "Download"]]
-    df_display.columns = ["Report Name", "Status", "Total Keywords Translated", "Language", "Download Link"]
-
-    # AgGrid for interactive table
-    gb = GridOptionsBuilder.from_dataframe(df_display)
-    gb.configure_pagination(paginationAutoPageSize=True)
-    gb.configure_selection(selection_mode="single", use_checkbox=True)
-    gb.configure_column("Download Link", cellRenderer='agGroupCellRenderer')
-    gridOptions = gb.build()
-
-    AgGrid(df_display, gridOptions=gridOptions, update_mode=GridUpdateMode.SELECTION_CHANGED, fit_columns_on_grid_load=True)
-
+if not log_df.empty:
+    table_df = log_df.copy()
+    table_df["Download"] = table_df["output_file"].apply(lambda f: f"[Download]({f})" if os.path.exists(f) else "File missing")
+    
+    # Select relevant columns
+    table_df = table_df[["report_name", "status", "total_keywords", "language", "Download"]]
+    
+    # Display table
+    st.data_editor(
+        table_df,
+        column_config={
+            "report_name": st.column_config.TextColumn("Report Name"),
+            "status": st.column_config.TextColumn("Status"),
+            "total_keywords": st.column_config.NumberColumn("Total Keywords"),
+            "language": st.column_config.TextColumn("Language"),
+            "Download": st.column_config.LinkColumn("Download Link")
+        },
+        hide_index=True
+    )
 else:
-    st.info("No historical reports found yet.")
+    st.info("No historical reports yet.")
+
