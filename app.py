@@ -14,61 +14,90 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # -----------------------------
-# Streamlit UI
+# Load historical jobs
 # -----------------------------
-st.title("Keyword Translation Tool")
-
-# Scorecards
 if os.path.exists(JOBS_LOG):
     log_df = pd.read_csv(JOBS_LOG)
 else:
     log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
 
-completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
-total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
+# -----------------------------
+# Streamlit UI Tabs
+# -----------------------------
+st.title("Keyword Translation Tool")
+tabs = st.tabs(["Translate Keywords", "Historical Reports"])
 
-col1, col2 = st.columns(2)
-col1.metric("Completed Jobs", completed_jobs)
-col2.metric("Total Keywords Translated", total_keywords)
+# -----------------------------
+# Tab 1: Translate Keywords
+# -----------------------------
+with tabs[0]:
+    # Scorecards
+    completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
+    total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
 
-st.subheader("Upload Keywords for Translation")
-uploaded_file = st.file_uploader("Upload Excel file with columns: keyword, category, subcategory, product_category", type=["xlsx"])
+    col1, col2 = st.columns(2)
+    col1.metric("Completed Jobs", completed_jobs)
+    col2.metric("Total Keywords Translated", total_keywords)
 
-target_language = st.selectbox("Select target language", ["French", "Spanish", "German", "Italian", "Chinese"])
+    st.subheader("Upload Keywords for Translation")
+    uploaded_file = st.file_uploader(
+        "Upload Excel file with columns: keyword, category, subcategory, product_category", 
+        type=["xlsx"]
+    )
 
-if uploaded_file:
-    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    st.success(f"File {uploaded_file.name} uploaded successfully.")
+    target_language = st.selectbox(
+        "Select target language", 
+        ["French", "Spanish", "German", "Italian", "Chinese"]
+    )
 
-    if st.button("Translate"):
-        progress_bar = st.progress(0)
-        output_file, progress_callback = run_translation_job(file_path, target_language)
+    if uploaded_file:
+        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success(f"File {uploaded_file.name} uploaded successfully.")
 
-        # Iterate progress generator
-        for pct in progress_callback():
-            progress_bar.progress(pct)
+        if st.button("Translate"):
+            progress_bar = st.progress(0)
+            output_file, progress_callback = run_translation_job(file_path, target_language)
 
-        st.success(f"Translation complete: {output_file}")
-        st.download_button(
-            "Download Translated Keywords",
-            data=open(output_file, "rb").read(),
-            file_name=os.path.basename(output_file),
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            # Iterate progress generator
+            for pct in progress_callback():
+                progress_bar.progress(pct)
 
-st.subheader("Historical Translation Jobs")
-if not log_df.empty:
-    st.dataframe(log_df)
-    for idx, row in log_df.iterrows():
-        out_file = os.path.join(OUTPUT_DIR, row["output_file"])
-        if os.path.exists(out_file):
+            st.success(f"Translation complete: {output_file}")
             st.download_button(
-                label=f"Download {row['output_file']}",
-                data=open(out_file, "rb").read(),
-                file_name=row["output_file"],
+                "Download Translated Keywords",
+                data=open(output_file, "rb").read(),
+                file_name=os.path.basename(output_file),
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
-else:
-    st.info("No translation jobs found yet.")
+
+# -----------------------------
+# Tab 2: Historical Reports
+# -----------------------------
+with tabs[1]:
+    st.subheader("Historical Translation Jobs")
+
+    if not log_df.empty:
+        st.dataframe(log_df)
+
+        # Individual downloads
+        for idx, row in log_df.iterrows():
+            out_file = os.path.join(OUTPUT_DIR, row["output_file"])
+            if os.path.exists(out_file):
+                st.download_button(
+                    label=f"Download {row['output_file']}",
+                    data=open(out_file, "rb").read(),
+                    file_name=row["output_file"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        # Download full historical CSV
+        st.download_button(
+            label="Download Full Historical Report (CSV)",
+            data=open(JOBS_LOG, "rb").read(),
+            file_name="translation_jobs_history.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No translation jobs found yet.")
