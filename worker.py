@@ -32,20 +32,22 @@ def run_translation_job(input_file, target_language):
         total_chunks = len(list(chunk_list(keywords, 100)))
         for i, chunk in enumerate(chunk_list(keywords, 100), 1):
             prompt = f"""
-Translate these keywords into {target_language}, providing **up to 2 variations per keyword** if possible:
-{', '.join(chunk)}
-Return only the translated keywords in the same order, separated by commas.
+Translate the following English keywords into {target_language}.
+For each keyword, provide **two alternative translations** separated by a slash (/).
+Return only the translations in the same order as the input keywords, separated by commas.
+Keywords: {', '.join(chunk)}
 """
             response = openai.chat.completions.create(
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}]
             )
             translated_chunk = response.choices[0].message.content.split(",")
+            # Clean and strip
             translated_keywords.extend([clean_translation(k) for k in translated_chunk])
             yield min(int(i * 100 / total_chunks), 100)
             sleep(0.5)  # prevent rate limits
 
-    # Run the generator
+    # Run the generator to completion
     progress_gen = progress_callback()
     for _ in progress_gen:
         pass
@@ -53,6 +55,7 @@ Return only the translated keywords in the same order, separated by commas.
     # Add translations to DataFrame
     df["translated_keyword"] = translated_keywords[:len(df)]
 
+    # Save output Excel
     output_file = os.path.join(OUTPUT_DIR, f"translated_{os.path.basename(input_file)}")
     df.to_excel(output_file, index=False)
 
@@ -60,14 +63,14 @@ Return only the translated keywords in the same order, separated by commas.
     if os.path.exists(JOBS_LOG):
         log_df = pd.read_csv(JOBS_LOG)
     else:
-        log_df = pd.DataFrame(columns=["input_file", "output_file", "translated_to", "total_keywords", "status"])
+        log_df = pd.DataFrame(columns=["input_file", "output_file", "translated_to", "status", "total_keywords"])
 
     new_row = pd.DataFrame([{
         "input_file": os.path.basename(input_file),
         "output_file": os.path.basename(output_file),
         "translated_to": target_language,
-        "total_keywords": len(keywords),
-        "status": "Completed"
+        "status": "Completed",
+        "total_keywords": len(keywords)
     }])
 
     log_df = pd.concat([log_df, new_row], ignore_index=True)
