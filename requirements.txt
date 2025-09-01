@@ -1,5 +1,5 @@
-streamlit==1.25.0
-pandas==2.0.3
-openai==1.0.0
-st-aggrid==0.4.6
-openpyxl==3.1.2
+streamlit
+pandas
+openai
+st-aggrid
+openpyxl
