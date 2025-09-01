@@ -68,4 +68,25 @@ def run_worker(project_id: int):
     total = len(keywords)
     print(f"{total} keywords to translate.")
 
-    supabase.table("translation_projects").update({"status": "
+    supabase.table("translation_projects").update({"status": "in_progress"}).eq("id", project_id).execute()
+
+    for i, row in enumerate(keywords, 1):
+        keyword = row.get("keyword")
+        if not keyword:
+            continue
+        t1, t2 = translate_keyword(keyword, language)
+        supabase.table("translations").update({
+            "translated_keyword": t1,
+            "translated_variable_2": t2
+        }).eq("id", row["id"]).execute()
+        print(f"[{i}/{total}] {keyword} → {t1}, {t2}")
+
+    supabase.table("translation_projects").update({"status": "completed"}).eq("id", project_id).execute()
+    print("All keywords translated.")
+
+# -------------------------------
+# Run worker manually
+# -------------------------------
+if __name__ == "__main__":
+    project_id = int(input("Enter Project ID to process: "))
+    run_worker(project_id)
