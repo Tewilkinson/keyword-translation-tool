@@ -1,5 +1,7 @@
+
 streamlit
-openai
 pandas
-openpyxl
+openai
 python-dotenv
+openpyxl
+tqdm
