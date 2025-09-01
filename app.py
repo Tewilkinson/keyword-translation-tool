@@ -142,7 +142,7 @@ def run_worker_once():
 
 # -------------------- UI LAYOUT: TABS --------------------
 
-st.title("🌍 Keyword Translation Tool")
+st.title("Keyword Translation Tool")
 
 tab_new, tab_download = st.tabs(["New Job", "Download by Project"])
 
@@ -219,7 +219,7 @@ with tab_new:
     st.markdown("---")
     st.subheader("Run job")
     st.caption("This processes any queued jobs and uploads CSVs to Storage.")
-    if st.button("▶️ Process queued jobs now"):
+    if st.button("▶Process queued jobs now"):
         run_worker_once()
 
 # ---------------- TAB 2: DOWNLOAD BY PROJECT ----------------
@@ -257,7 +257,7 @@ with tab_download:
             csv_bytes = build_csv_bytes_for_job(latest_job["id"])
             if csv_bytes:
                 st.download_button(
-                    label="📥 Download CSV",
+                    label="Download CSV",
                     data=csv_bytes,
                     file_name=f"translated_{latest_job['id']}.csv",
                     mime="text/csv",
