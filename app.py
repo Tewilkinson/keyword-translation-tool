@@ -248,18 +248,18 @@ else:
         c1, c2 = st.columns(2)
 
         # Option A: storage link (public or signed)
-        with c1:
+               with c1:
             link = latest_job.get("download_url")
             if link:
                 st.markdown(f"[📥 Download CSV]({link})")
             else:
                 if latest_job.get("status") != "completed":
                     st.warning("This job is not completed yet. You can process queued jobs below.")
-               if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
-    url = ensure_storage_link(latest_job["id"])
-    if url:
-        st.success("Link created!")
-        st.rerun()
+                if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
+                    url = ensure_storage_link(latest_job["id"])
+                    if url:
+                        st.success("Link created!")
+                        st.rerun()
 
         # Option C: instant download from DB (works even without storage link)
         with c2:
