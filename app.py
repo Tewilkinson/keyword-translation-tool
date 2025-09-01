@@ -95,15 +95,15 @@ with tabs[1]:
 
         st.dataframe(display_df_display, use_container_width=True)
 
-        # Single dropdown + download
-        st.markdown("### Download Historical Report")
+        # Dropdown to select report
+        st.markdown("### Download or Delete Historical Report")
         selected_file = st.selectbox(
-            "Select a report to download",
+            "Select a report",
             options=display_df["output_file"].tolist(),
             format_func=lambda x: x
         )
 
-        # One button always downloads selected report
+        # One download button
         file_path = os.path.join(OUTPUT_DIR, selected_file)
         if os.path.exists(file_path):
             st.download_button(
@@ -114,5 +114,25 @@ with tabs[1]:
             )
         else:
             st.error("File not found. It may have been deleted.")
+
+        # Delete button with confirmation modal
+        if st.button("Delete Selected Report"):
+            # Modal for confirmation
+            with st.modal("Confirm Deletion"):
+                st.warning(f"Are you sure you want to delete '{selected_file}' and all its historical data?")
+                col_yes, col_no = st.columns(2)
+                with col_yes:
+                    if st.button("Yes, Delete"):
+                        # Delete file
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        # Remove from log
+                        log_df = log_df[log_df["output_file"] != selected_file]
+                        log_df.to_csv(JOBS_LOG, index=False)
+                        st.success(f"'{selected_file}' deleted successfully.")
+                        st.experimental_rerun()  # Refresh app
+                with col_no:
+                    if st.button("Cancel"):
+                        st.info("Deletion cancelled.")
     else:
         st.info("No translation jobs found yet.")
