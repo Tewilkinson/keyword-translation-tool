@@ -13,34 +13,33 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-st.title("🌍 Keyword Translation Tool")
+st.title("🌍 Bulk Keyword Translation Tool")
 
 st.markdown("""
-Upload a CSV file or paste keyword data below. Only `keyword` and `subcategory` will be translated.
+Upload a CSV file or paste a list of keywords.  
+The system will generate and translate **two variants** for each keyword using OpenAI.
 """)
 
 # Language selection
 target_language = st.selectbox("Select Target Language", ["Spanish", "French", "German", "Italian", "Japanese"])
 
 # File upload
-uploaded_file = st.file_uploader("Upload CSV (keyword, category, subcategory, product_category)", type=["csv"])
+uploaded_file = st.file_uploader("Upload CSV with one column: keyword", type=["csv"])
 
 # Paste input
-st.markdown("Or paste CSV data below:")
-pasted_data = st.text_area("Paste CSV-formatted data")
+st.markdown("Or paste keywords (one per line) below:")
+pasted_data = st.text_area("Paste keywords")
 
-# Handle file or pasted input
+# Handle input
 df = None
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 elif pasted_data:
-    from io import StringIO
-    df = pd.read_csv(StringIO(pasted_data))
+    df = pd.DataFrame({"keyword": [line.strip() for line in pasted_data.splitlines() if line.strip()]})
 
 if df is not None:
-    expected_cols = {"keyword", "category", "subcategory", "product_category"}
-    if not expected_cols.issubset(df.columns):
-        st.error("Missing required columns. Ensure CSV has: keyword, category, subcategory, product_category.")
+    if "keyword" not in df.columns:
+        st.error("CSV must contain a 'keyword' column.")
     else:
         st.dataframe(df)
         if st.button("Submit Translation Job"):
@@ -55,21 +54,18 @@ if df is not None:
                 "target_language": target_language
             }).execute()
 
-            # Add items to translation_items
+            # Add keyword rows to translation_items
             for _, row in df.iterrows():
                 supabase.table("translation_items").insert({
                     "job_id": job_id,
-                    "keyword": row["keyword"],
-                    "subcategory": row["subcategory"],
-                    "category": row["category"],
-                    "product_category": row["product_category"],
+                    "keyword": row["keyword"]
                 }).execute()
 
-            st.success(f"Translation job submitted! Job ID: {job_id}")
+            st.success(f"✅ Translation job submitted! Job ID: `{job_id}`")
 
 # Job status viewer
 st.markdown("---")
-st.subheader("📥 View Submitted Jobs")
+st.subheader("📥 View Recent Jobs")
 jobs = supabase.table("translation_jobs").select("*").order("submitted_at", desc=True).limit(10).execute().data
 
 for job in jobs:
