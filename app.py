@@ -1,77 +1,56 @@
+# app.py
 import streamlit as st
+import os
 import pandas as pd
 from worker import run_translation_job
-import os
+
+UPLOADS_DIR = "uploads"
+OUTPUTS_DIR = "outputs"
+JOBS_LOG = "jobs_log.csv"
+
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
 
 st.title("Keyword Translation Tool")
 
-# ------------------------------
-# Dashboard score cards
-# ------------------------------
-if os.path.exists("jobs_log.csv"):
-    jobs_df = pd.read_csv("jobs_log.csv")
-    total_jobs = len(jobs_df)
-    total_keywords = 0
-    for file in jobs_df["output_file"]:
-        df = pd.read_excel(os.path.join("outputs", file))
-        total_keywords += len(df)
+# Dashboard KPIs
+if os.path.exists(JOBS_LOG):
+    log_df = pd.read_csv(JOBS_LOG)
+    total_jobs = len(log_df)
+    completed_jobs = len(log_df[log_df['status'] == "Completed"])
+    total_keywords = log_df['total_keywords'].sum()
 else:
-    total_jobs = 0
-    total_keywords = 0
+    log_df = pd.DataFrame()
+    total_jobs = completed_jobs = total_keywords = 0
 
-col1, col2 = st.columns(2)
-col1.metric("Total Jobs Completed", total_jobs)
-col2.metric("Total Keywords Translated", total_keywords)
+col1, col2, col3 = st.columns(3)
+col1.metric("Total Jobs Submitted", total_jobs)
+col2.metric("Jobs Completed", completed_jobs)
+col3.metric("Total Keywords Processed", total_keywords)
 
-st.markdown("---")
+st.header("Submit New Translation Job")
+uploaded_file = st.file_uploader("Upload Excel with 'keyword' column", type=["xlsx"])
 
-# ------------------------------
-# Upload section
-# ------------------------------
-st.subheader("Upload Keywords Excel File")
-uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
+target_language = st.selectbox("Target Language", ["French", "Spanish", "German", "Italian"])
 
-target_language = st.selectbox("Select Target Language", ["French", "Spanish", "German", "Italian", "Chinese"])
-
-if uploaded_file:
-    file_path = os.path.join("uploads", uploaded_file.name)
+if uploaded_file and st.button("Translate"):
+    file_path = os.path.join(UPLOADS_DIR, uploaded_file.name)
     with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-    st.success(f"File {uploaded_file.name} uploaded successfully!")
 
-    if st.button("Translate Keywords"):
-        with st.spinner("Translating..."):
-            output_file = run_translation_job(file_path, target_language)
-        st.success(f"Translation completed! File saved to outputs/")
-        st.download_button(
-            "Download Translated File",
-            data=open(output_file, "rb"),
-            file_name=os.path.basename(output_file)
-        )
+    st.info("Job submitted! Translation is running in the background...")
+    run_translation_job(file_path, target_language)
+    st.success("Job completed! Refresh the Past Jobs section below to see output.")
 
-# ------------------------------
-# Past jobs table with downloads
-# ------------------------------
-st.subheader("Past Translation Jobs")
-if os.path.exists("jobs_log.csv"):
-    jobs_df = pd.read_csv("jobs_log.csv")
-    jobs_df_sorted = jobs_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
-
-    for i, row in jobs_df_sorted.iterrows():
-        col1, col2, col3, col4 = st.columns([3, 3, 2, 2])
-        col1.write(row["timestamp"])
-        col2.write(row["input_file"])
-        col3.write(row["target_language"])
-        output_path = os.path.join("outputs", row["output_file"])
-        if os.path.exists(output_path):
-            col4.download_button(
-                "Download Translated Output",
-                data=open(output_path, "rb"),
-                file_name=row["output_file"]
-            )
-        else:
-            col4.write("File missing")
-else:
-    st.info("No past translation jobs found.")
+st.header("Past Translation Jobs")
+if os.path.exists(JOBS_LOG):
+    log_df = pd.read_csv(JOBS_LOG)
+    log_df = log_df.sort_values(by="timestamp", ascending=False)
+    for idx, row in log_df.iterrows():
+        st.write(f"**Job:** {row['input_file']} → {row['output_file']}")
+        st.write(f"Language: {row['target_language']}, Keywords: {row['total_keywords']}, Status: {row['status']}, Progress: {row['progress_percent']}%")
+        if row['status'] == "Completed":
+            file_path = os.path.join(OUTPUTS_DIR, row['output_file'])
+            st.download_button("Download Translated File", file_path, file_name=row['output_file'])
