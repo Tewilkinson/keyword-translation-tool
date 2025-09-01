@@ -2,7 +2,6 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
-
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
