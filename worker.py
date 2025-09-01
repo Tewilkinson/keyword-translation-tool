@@ -1,121 +1,72 @@
-# worker.py
-
 import os
-import sys
-import time
-import json
-import openai
-from dotenv import load_dotenv
-from supabase import create_client
 import pandas as pd
+import openai
+from time import sleep
 
-# ---------------------
-# Load environment variables
-# ---------------------
-load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OUTPUT_DIR = "outputs"
+JOBS_LOG = "jobs.csv"
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-openai.api_key = OPENAI_API_KEY
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ---------------------
-# Helpers
-# ---------------------
-def get_project_language(project_id):
-    res = supabase.table("translation_projects").select("language").eq("id", project_id).execute()
-    return res.data[0]["language"] if res.data else "English"
+def chunk_list(lst, n):
+    """Yield successive n-sized chunks from list."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
-def update_status(project_id, status):
-    supabase.table("translation_projects").update({"status": status}).eq("id", project_id).execute()
+def clean_translation(text):
+    """Remove extra quotes or whitespace."""
+    return text.replace('"', '').replace("'", "").strip()
 
-def clean(text):
-    return text.replace('"', '').replace("'", '').strip()
+def run_translation_job(input_file, target_language):
+    df = pd.read_excel(input_file)
+    if "keyword" not in df.columns:
+        raise ValueError("Excel must have a 'keyword' column")
 
-# ---------------------
-# Translation logic
-# ---------------------
-def run_translation(project_id):
-    print(f"\n🚀 Running translation for project {project_id}")
-    update_status(project_id, "Running")
+    keywords = df["keyword"].tolist()
+    translated_keywords = []
 
-    language = get_project_language(project_id)
-    print(f"🌍 Target language: {language}")
-
-    # Fetch all keywords
-    rows = supabase.table("translation_keywords").select("*").eq("project_id", project_id).execute().data
-
-    if not rows:
-        print("❌ No keywords found.")
-        update_status(project_id, "Error")
-        return
-
-    for i, row in enumerate(rows, 1):
-        keyword = row.get("keyword", "")
-        if not keyword:
-            continue
-
-        prompt = f"""
-You are an SEO expert. Translate the following keyword into {language} as a native speaker would search it on Google.
-
-Keyword: {keyword}
-
-Respond only with valid JSON:
-{{
-  "translated_keyword": "...",
-  "translated_variable_2": "..."
-}}
-        """
-
-        try:
-            print(f"\n[{i}] 🔄 Translating: {keyword}")
-            response = openai.ChatCompletion.create(
+    # Progress generator
+    def progress_callback():
+        total_chunks = len(list(chunk_list(keywords, 100)))
+        for i, chunk in enumerate(chunk_list(keywords, 100), 1):
+            prompt = f"""
+Translate these keywords into {target_language}:
+{', '.join(chunk)}
+Return only the translated keywords in the same order, separated by commas.
+"""
+            response = openai.chat.completions.create(
                 model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "Only respond in valid JSON format."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.5
+                messages=[{"role": "user", "content": prompt}]
             )
+            translated_chunk = response.choices[0].message.content.split(",")
+            translated_keywords.extend([clean_translation(k) for k in translated_chunk])
+            yield min(int(i * 100 / total_chunks), 100)
+            sleep(0.5)  # prevent rate limits
 
-            raw = response.choices[0].message.content.strip()
-            print(f"[{i}] 📥 GPT response:\n{raw}")
+    # Run the generator to collect all translations
+    progress_gen = progress_callback()
+    for _ in progress_gen:
+        pass
 
-            try:
-                data = json.loads(raw)
-                var1 = clean(data.get("translated_keyword", keyword))
-                var2 = clean(data.get("translated_variable_2", keyword + " alt"))
-            except json.JSONDecodeError:
-                print(f"[{i}] ⚠️ Failed to parse JSON, using fallback.")
-                var1 = keyword
-                var2 = keyword + " alt"
+    df["translated_keyword"] = translated_keywords[:len(df)]
+    output_file = os.path.join(OUTPUT_DIR, f"translated_{os.path.basename(input_file)}")
+    df.to_excel(output_file, index=False)
 
-            # Update in Supabase
-            update_resp = supabase.table("translation_keywords").update({
-                "translated_var1": var1,
-                "translated_var2": var2
-            }).eq("id", row["id"]).execute()
+    # Log job
+    if os.path.exists(JOBS_LOG):
+        log_df = pd.read_csv(JOBS_LOG)
+    else:
+        log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
 
-            print(f"[{i}] ✅ Updated row ID {row['id']} → {var1} | {var2}")
-            time.sleep(1)
+    new_row = pd.DataFrame([{
+        "input_file": os.path.basename(input_file),
+        "output_file": os.path.basename(output_file),
+        "status": "Completed",
+        "total_keywords": len(keywords)
+    }])
 
-        except Exception as e:
-            print(f"[{i}] ❌ Error from OpenAI or Supabase: {e}")
-            continue
+    log_df = pd.concat([log_df, new_row], ignore_index=True)
+    log_df.to_csv(JOBS_LOG, index=False)
 
-    update_status(project_id, "Completed")
-    print("\n🎉 Translations completed and status set to Completed.\n")
-
-# ---------------------
-# Entrypoint
-# ---------------------
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python worker.py <project_id>")
-        sys.exit(1)
-
-    try:
-        run_translation(int(sys.argv[1]))
-    except Exception as e:
-        print(f"❌ Fatal error: {e}")
+    return output_file, lambda: progress_callback()
