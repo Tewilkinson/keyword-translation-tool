@@ -1,7 +1,0 @@
-uploads/*
-outputs/*
-uploads/.gitkeep
-outputs/.gitkeep
-jobs.db
-*.pyc
-__pycache__/
