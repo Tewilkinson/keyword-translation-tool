@@ -1,73 +1,88 @@
-import os
 import pandas as pd
+import os
+import uuid
+import time
+from datetime import datetime
 import openai
-from time import sleep
 
-OUTPUT_DIR = "outputs"
-JOBS_LOG = "jobs.csv"
+# -----------------------------
+# Directories
+# -----------------------------
+UPLOADS_DIR = "uploads"
+OUTPUTS_DIR = "outputs"
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# -----------------------------
+# Translation Logic
+# -----------------------------
+def run_translation_job(file_path, target_language):
+    # Load Excel
+    df = pd.read_excel(file_path)
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
-
-def chunk_list(lst, n):
-    """Yield successive n-sized chunks from list."""
-    for i in range(0, len(lst), n):
-        yield lst[i:i + n]
-
-def clean_translation(text):
-    """Remove extra quotes or whitespace."""
-    return text.replace('"', '').replace("'", "").strip()
-
-def run_translation_job(input_file, target_language):
-    df = pd.read_excel(input_file)
+    # Check required column
     if "keyword" not in df.columns:
         raise ValueError("Excel must have a 'keyword' column")
 
-    keywords = df["keyword"].tolist()
+    # Prepare translations
     translated_keywords = []
+    for _, row in df.iterrows():
+        keyword = str(row["keyword"])
+        category = row.get("category", "")
+        subcategory = row.get("subcategory", "")
+        product_category = row.get("product_category", "")
 
-    # Progress generator
-    def progress_callback():
-        total_chunks = len(list(chunk_list(keywords, 100)))
-        for i, chunk in enumerate(chunk_list(keywords, 100), 1):
-            prompt = f"""
-Translate these keywords into {target_language}:
-{', '.join(chunk)}
-Return only the translated keywords in the same order, separated by commas.
-"""
-            response = openai.chat.completions.create(
-                model="gpt-4",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            translated_chunk = response.choices[0].message.content.split(",")
-            translated_keywords.extend([clean_translation(k) for k in translated_chunk])
-            yield min(int(i * 100 / total_chunks), 100)
-            sleep(0.5)  # prevent rate limits
+        # Call OpenAI for translations (two variations)
+        translation1 = call_openai_translate(keyword, target_language)
+        translation2 = call_openai_translate(keyword, target_language, alternative=True)
 
-    # Run the generator
-    progress_gen = progress_callback()
-    for _ in progress_gen:
-        pass
+        # Clean quotes
+        translation1 = translation1.replace('"', '').replace("'", "")
+        translation2 = translation2.replace('"', '').replace("'", "")
 
-    df["translated_keyword"] = translated_keywords[:len(df)]
-    output_file = os.path.join(OUTPUT_DIR, f"translated_{os.path.basename(input_file)}")
-    df.to_excel(output_file, index=False)
+        translated_keywords.append({
+            "keyword": keyword,
+            "category": category,
+            "subcategory": subcategory,
+            "product_category": product_category,
+            "translation_1": translation1,
+            "translation_2": translation2
+        })
 
-    # Log job
-    if os.path.exists(JOBS_LOG):
-        log_df = pd.read_csv(JOBS_LOG)
-    else:
-        log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
+    # Save output Excel
+    output_name = f"{os.path.basename(file_path).split('.')[0]}_translated_{uuid.uuid4().hex[:8]}.xlsx"
+    output_path = os.path.join(OUTPUTS_DIR, output_name)
+    pd.DataFrame(translated_keywords).to_excel(output_path, index=False)
 
-    new_row = pd.DataFrame([{
-        "input_file": os.path.basename(input_file),
-        "output_file": os.path.basename(output_file),
-        "status": "Completed",
-        "total_keywords": len(keywords)
-    }])
+    # Return path
+    return output_path, None
 
-    log_df = pd.concat([log_df, new_row], ignore_index=True)
-    log_df.to_csv(JOBS_LOG, index=False)
+# -----------------------------
+# OpenAI translation call
+# -----------------------------
+def call_openai_translate(keyword, target_language, alternative=False):
+    prompt = f"Translate the following keyword into {target_language}. Provide a {'second alternative translation' if alternative else 'primary translation'}: {keyword}"
+    response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    text = response.choices[0].message.content.strip()
+    return text
 
-    return output_file, lambda: progress_callback()
+# -----------------------------
+# Historical jobs
+# -----------------------------
+def get_historical_jobs(outputs_dir):
+    jobs = []
+    for file in os.listdir(outputs_dir):
+        if file.endswith(".xlsx"):
+            try:
+                df = pd.read_excel(os.path.join(outputs_dir, file))
+                jobs.append({
+                    "report_name": file.split("_translated_")[0] + ".xlsx",
+                    "status": "Completed",
+                    "total_keywords": len(df),
+                    "language": "Unknown",  # Optionally extract from filename or store in metadata
+                    "output_file": os.path.join(outputs_dir, file)
+                })
+            except:
+                continue
+    return jobs
