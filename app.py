@@ -1,105 +1,125 @@
+# app.py
+
 import streamlit as st
 import pandas as pd
+from st_aggrid import AgGrid, GridOptionsBuilder, DataReturnMode, GridUpdateMode
+import openai
 import os
-from datetime import datetime
-from worker import run_translation_job  # your server-side worker handling translation
+from dotenv import load_dotenv
 
-# -------------------------------
-# Setup directories
-# -------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
-OUTPUTS_DIR = os.path.join(BASE_DIR, "outputs")
-LOG_FILE = os.path.join(BASE_DIR, "jobs.db")
+# -----------------------------
+# Load environment variables
+# -----------------------------
+load_dotenv()
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-os.makedirs(OUTPUTS_DIR, exist_ok=True)
+# -----------------------------
+# Streamlit page setup
+# -----------------------------
+st.set_page_config(
+    page_title="Keyword Translation Tool",
+    page_icon="🌐",
+    layout="wide"
+)
 
-# -------------------------------
-# Load historical jobs
-# -------------------------------
-if os.path.exists(LOG_FILE):
-    log_df = pd.read_csv(LOG_FILE)
-else:
-    log_df = pd.DataFrame(columns=["report_name", "status", "total_keywords", "language", "output_file", "timestamp"])
+st.title("🌐 Keyword Translation Tool")
+st.markdown(
+    """
+    Translate your keywords into multiple languages using OpenAI.
+    Upload an Excel file or enter keywords manually.
+    """
+)
 
-# -------------------------------
-# Streamlit UI
-# -------------------------------
-st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
-st.title("Keyword Translation Tool")
-
-# -------------------------------
-# Dashboard KPIs
-# -------------------------------
-st.subheader("Dashboard")
-completed_jobs = len(log_df[log_df['status'] == "Completed"])
-total_keywords_translated = log_df['total_keywords'].sum() if not log_df.empty else 0
-st.metric("Completed Jobs", completed_jobs)
-st.metric("Total Keywords Translated", total_keywords_translated)
-
-st.markdown("---")
-
-# -------------------------------
-# File upload and translation
-# -------------------------------
-st.subheader("Submit Translation Job")
-uploaded_file = st.file_uploader("Upload Excel with 'keyword' column", type=["xlsx"])
-
-target_language = st.selectbox("Select Target Language", ["French", "Spanish", "German", "Italian"])
+# -----------------------------
+# User input: upload Excel or manual input
+# -----------------------------
+uploaded_file = st.file_uploader("Upload Excel with a column 'Keyword'", type=["xlsx", "csv"])
 
 if uploaded_file:
-    file_path = os.path.join(UPLOADS_DIR, f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}")
-    with open(file_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    
-    if st.button("Run Translation"):
-        with st.spinner("Running translation job..."):
-            try:
-                output_file, progress_callback = run_translation_job(file_path, target_language)
-                
-                # Add to logs
-                new_log = {
-                    "report_name": uploaded_file.name,
-                    "status": "Completed",
-                    "total_keywords": progress_callback['total'],
-                    "language": target_language,
-                    "output_file": output_file,
-                    "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                }
-                log_df = pd.concat([log_df, pd.DataFrame([new_log])], ignore_index=True)
-                log_df.to_csv(LOG_FILE, index=False)
-                
-                st.success(f"Translation completed! Output: {output_file}")
-            except Exception as e:
-                st.error(f"Error running translation: {e}")
-
-st.markdown("---")
-
-# -------------------------------
-# Historical Reports Table
-# -------------------------------
-st.subheader("Historical Reports")
-
-if not log_df.empty:
-    table_df = log_df.copy()
-    table_df["Download"] = table_df["output_file"].apply(lambda f: f"[Download]({f})" if os.path.exists(f) else "File missing")
-    
-    # Select relevant columns
-    table_df = table_df[["report_name", "status", "total_keywords", "language", "Download"]]
-    
-    # Display table
-    st.data_editor(
-        table_df,
-        column_config={
-            "report_name": st.column_config.TextColumn("Report Name"),
-            "status": st.column_config.TextColumn("Status"),
-            "total_keywords": st.column_config.NumberColumn("Total Keywords"),
-            "language": st.column_config.TextColumn("Language"),
-            "Download": st.column_config.LinkColumn("Download Link")
-        },
-        hide_index=True
-    )
+    if uploaded_file.name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+    else:
+        df = pd.read_excel(uploaded_file)
+    if 'Keyword' not in df.columns:
+        st.error("Uploaded file must contain a 'Keyword' column.")
+        st.stop()
 else:
-    st.info("No historical reports yet.")
+    raw_keywords = st.text_area("Enter keywords (one per line):")
+    df = pd.DataFrame({'Keyword': [k.strip() for k in raw_keywords.splitlines() if k.strip()]})
 
+if df.empty:
+    st.warning("No keywords provided yet.")
+    st.stop()
+
+# -----------------------------
+# Language selection
+# -----------------------------
+languages = st.multiselect(
+    "Select target languages",
+    options=["French", "German", "Spanish", "Italian", "Portuguese", "Japanese", "Chinese"],
+    default=["French", "German"]
+)
+
+if not languages:
+    st.warning("Please select at least one target language.")
+    st.stop()
+
+# -----------------------------
+# Translate function
+# -----------------------------
+def translate_keyword(keyword, target_language):
+    try:
+        prompt = f"Translate the following keyword into {target_language}: '{keyword}'"
+        response = openai.ChatCompletion.create(
+            model="gpt-4",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0
+        )
+        translation = response.choices[0].message.content.strip()
+        return translation
+    except Exception as e:
+        st.error(f"OpenAI API error: {e}")
+        return ""
+
+# -----------------------------
+# Perform translation
+# -----------------------------
+st.info(f"Translating {len(df)} keywords into {len(languages)} languages...")
+for lang in languages:
+    df[lang] = df['Keyword'].apply(lambda k: translate_keyword(k, lang))
+
+# -----------------------------
+# Display results with AgGrid
+# -----------------------------
+st.subheader("Translated Keywords")
+gb = GridOptionsBuilder.from_dataframe(df)
+gb.configure_default_column(editable=True, groupable=True)
+gridOptions = gb.build()
+
+AgGrid(
+    df,
+    gridOptions=gridOptions,
+    data_return_mode=DataReturnMode.FILTERED_AND_SORTED,
+    update_mode=GridUpdateMode.VALUE_CHANGED,
+    fit_columns_on_grid_load=True,
+    enable_enterprise_modules=False
+)
+
+# -----------------------------
+# Download translated Excel
+# -----------------------------
+def convert_df_to_excel(df):
+    from io import BytesIO
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False)
+    processed_data = output.getvalue()
+    return processed_data
+
+excel_data = convert_df_to_excel(df)
+st.download_button(
+    label="📥 Download Translated Keywords as Excel",
+    data=excel_data,
+    file_name="translated_keywords.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
