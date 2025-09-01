@@ -19,7 +19,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 if os.path.exists(JOBS_LOG):
     log_df = pd.read_csv(JOBS_LOG)
 else:
-    log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
+    log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords", "project"])
 
 # -----------------------------
 # Streamlit UI Tabs
@@ -45,12 +45,13 @@ with tabs[0]:
         type=["xlsx"]
     )
 
+    project_name = st.text_input("Enter Project Name")
     target_language = st.selectbox(
         "Select target language", 
         ["French", "Spanish", "German", "Italian", "Chinese"]
     )
 
-    if uploaded_file:
+    if uploaded_file and project_name:
         file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -58,7 +59,7 @@ with tabs[0]:
 
         if st.button("Translate"):
             progress_bar = st.progress(0)
-            output_file, progress_callback = run_translation_job(file_path, target_language)
+            output_file, progress_callback = run_translation_job(file_path, target_language, project_name)
 
             # Iterate progress generator
             for pct in progress_callback():
@@ -79,25 +80,49 @@ with tabs[1]:
     st.subheader("Historical Translation Jobs")
 
     if not log_df.empty:
-        st.dataframe(log_df)
+        projects = sorted(log_df["project"].dropna().unique())
+        selected_project = st.selectbox("Select Project", options=["All Projects"] + projects)
 
-        # Individual downloads
-        for idx, row in log_df.iterrows():
-            out_file = os.path.join(OUTPUT_DIR, row["output_file"])
-            if os.path.exists(out_file):
-                st.download_button(
-                    label=f"Download {row['output_file']}",
-                    data=open(out_file, "rb").read(),
-                    file_name=row["output_file"],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+        # Filter by project
+        if selected_project == "All Projects":
+            display_df = log_df.copy()
+        else:
+            display_df = log_df[log_df["project"] == selected_project]
 
-        # Download full historical CSV
+        st.dataframe(display_df)
+
+        # Download filtered logs
+        csv_data = display_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="Download Full Historical Report (CSV)",
+            label="📥 Download Filtered Report (CSV)",
+            data=csv_data,
+            file_name=f"{selected_project}_jobs.csv",
+            mime="text/csv"
+        )
+
+        # Download all log data
+        st.download_button(
+            label="📥 Download Full Report (CSV)",
             data=open(JOBS_LOG, "rb").read(),
             file_name="translation_jobs_history.csv",
             mime="text/csv"
         )
+
+        # Deletion
+        if selected_project != "All Projects":
+            if st.button("🗑️ Delete This Project and Its Files"):
+                confirm = st.warning("Are you sure you want to delete this project and all its associated files?")
+                if st.button("Yes, delete project", key="delete_confirm"):
+                    # Delete from log
+                    log_df = log_df[log_df["project"] != selected_project]
+                    log_df.to_csv(JOBS_LOG, index=False)
+
+                    # Delete associated output files
+                    for fname in display_df["output_file"]:
+                        fpath = os.path.join(OUTPUT_DIR, fname)
+                        if os.path.exists(fpath):
+                            os.remove(fpath)
+
+                    st.success("Project and files deleted. Please refresh.")
     else:
         st.info("No translation jobs found yet.")
