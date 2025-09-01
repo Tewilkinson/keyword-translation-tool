@@ -93,10 +93,15 @@ with tabs[1]:
         st.info("No projects submitted yet.")
     else:
         history_df = pd.DataFrame(st.session_state.projects)
-        # Add download links
-        history_df_display = history_df.copy()
-        history_df_display["Download"] = [
-            f"[Download](./{row['File']})" for _, row in history_df.iterrows()
-        ]
-        st.dataframe(
-            history_df_display[["Time]()]()
+        # Show table with download buttons
+        st.write("Here is your historical project log:")
+        for i, row in history_df.iterrows():
+            st.write(
+                f"**{row['Project Name']}** | Keywords: {row['Keyword Count']} | Language: {row['Target Language']} | Status: {row['Status']}"
+            )
+            st.download_button(
+                "📥 Download File",
+                data=open(row['File'], "rb"),
+                file_name=row['File'],
+                key=f"download_{i}"
+            )
