@@ -9,11 +9,13 @@ import streamlit as st
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from openai import OpenAI
+import io
 
+# --- Load secrets ---
 load_dotenv()
 
 def get_secret(name: str, default: str | None = None) -> str | None:
-    """Prefer Streamlit secrets on Streamlit Cloud; fallback to environment variables locally."""
+    """Prefer Streamlit secrets on Cloud; fallback to environment variables locally."""
     try:
         if "secrets" in dir(st) and name in st.secrets:
             return st.secrets[name]
@@ -26,119 +28,53 @@ SUPABASE_KEY = get_secret("SUPABASE_KEY")
 OPENAI_API_KEY = get_secret("OPENAI_API_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Supabase credentials missing. Add SUPABASE_URL and SUPABASE_KEY to Streamlit secrets or environment.")
+    st.error("Supabase credentials missing. Add SUPABASE_URL and SUPABASE_KEY.")
     st.stop()
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
-st.title("🌍 Keyword Translation Tool")
-st.caption(
-    "Input CSV columns: **keyword, category, subcategory, product_category**. "
-    "Only **keyword** is translated into **two variants**. Other fields are preserved for alignment."
-)
+# ---------- Helpers ----------
+def ensure_storage_link(job_id: str) -> str | None:
+    """(Re)build CSV for a job and upload to Storage; return public (or signed) URL."""
+    items = supabase.table("translation_items").select("*").eq("job_id", job_id).execute().data or []
+    if not items:
+        return None
+    df = pd.DataFrame(items)
+    fname = f"translated_{job_id}.csv"
+    tmp = f"/tmp/{fname}"
+    df.to_csv(tmp, index=False)
 
-target_language = st.selectbox(
-    "Select Target Language",
-    ["Spanish","French","German","Italian","Japanese","Portuguese","Polish","Dutch","Turkish"]
-)
+    try:
+        with open(tmp, "rb") as f:
+            supabase.storage.from_("translated_files").upload(
+                f"results/{fname}",
+                f,
+                {"contentType": "text/csv", "cacheControl": "3600", "upsert": "true"}
+            )
+        # If bucket is PUBLIC:
+        url = supabase.storage.from_("translated_files").get_public_url(f"results/{fname}")
+        # If bucket is PRIVATE, switch to signed URL:
+        # url = supabase.storage.from_("translated_files").create_signed_url(f"results/{fname}", 60*60)["signedURL"]
+    except Exception as e:
+        st.error(f"Upload failed: {e}")
+        return None
 
-# --- INPUT AREA ---
-uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-st.markdown("Or paste CSV data below:")
-pasted_data = st.text_area("Paste CSV-formatted data matching the required columns")
+    supabase.table("translation_jobs").update({"download_url": url}).eq("id", job_id).execute()
+    return url
 
-def load_df_from_inputs():
-    if uploaded_file is not None:
-        return pd.read_csv(uploaded_file)
-    if pasted_data.strip():
-        # Try CSV first; fallback to line list -> scaffold required columns
-        try:
-            return pd.read_csv(StringIO(pasted_data))
-        except Exception:
-            lines = [ln.strip() for ln in pasted_data.splitlines() if ln.strip()]
-            return pd.DataFrame({
-                "keyword": lines,
-                "category": ["" for _ in lines],
-                "subcategory": ["" for _ in lines],
-                "product_category": ["" for _ in lines],
-            })
-    return None
-
-df = load_df_from_inputs()
-
-if df is not None:
-    required = {"keyword","category","subcategory","product_category"}
-    missing = required - set(df.columns)
-    if missing:
-        st.error(f"Missing required columns: {', '.join(sorted(missing))}")
-    else:
-        st.write("Preview:")
-        # Streamlit is deprecating use_container_width—switch to width='stretch'
-        st.dataframe(df.head(200), width='stretch')
-        if st.button("Submit Translation Job"):
-            job_id = str(uuid.uuid4())
-            submitted_at = datetime.now(timezone.utc).isoformat()
-
-            supabase.table("translation_jobs").insert({
-                "id": job_id,
-                "status": "queued",
-                "submitted_at": submitted_at,
-                "target_language": target_language,
-            }).execute()
-
-            rows = [{
-                "job_id": job_id,
-                "keyword": str(r["keyword"]) if pd.notna(r["keyword"]) else "",
-                "category": str(r["category"]) if pd.notna(r["category"]) else "",
-                "subcategory": str(r["subcategory"]) if pd.notna(r["subcategory"]) else "",
-                "product_category": str(r["product_category"]) if pd.notna(r["product_category"]) else "",
-            } for _, r in df.iterrows()]
-
-            # Batch insert to avoid oversized payloads
-            for i in range(0, len(rows), 500):
-                supabase.table("translation_items").insert(rows[i:i+500]).execute()
-
-            st.success(f"✅ Job submitted! Job ID: `{job_id}`")
-
-st.divider()
-st.subheader("📄 Recent Translation Jobs")
-
-jobs = (
-    supabase.table("translation_jobs")
-    .select("*")
-    .order("submitted_at", desc=True)
-    .limit(25)
-    .execute()
-    .data or []
-)
-
-for job in jobs:
-    st.write(
-        f"**Job ID:** `{job.get('id')}` | **Status:** `{job.get('status')}` | "
-        f"**Language:** {job.get('target_language')} | **Submitted:** {job.get('submitted_at')}"
-    )
-    # Per-job status: translated count
-    items = supabase.table("translation_items").select("id,translated_keyword_1,translated_keyword_2").eq("job_id", job["id"]).execute().data or []
-    total = len(items)
-    done = sum(1 for r in items if (r.get("translated_keyword_1") or r.get("translated_keyword_2")))
-    st.caption(f"Items translated: {done}/{total}")
-    if job.get("status") == "completed" and job.get("download_url"):
-        st.markdown(f"[📥 Download CSV]({job['download_url']})")
-
-# ---------- INLINE WORKER (Optional: for immediate processing on Streamlit) ----------
-st.divider()
-st.subheader("🧪 Debug / Run Worker Inline")
-
-col1, col2 = st.columns(2)
-with col1:
-    st.write("Secrets check:")
-    st.code(
-        f"SUPABASE_URL set: {bool(SUPABASE_URL)}\n"
-        f"SUPABASE_KEY set: {bool(SUPABASE_KEY)}\n"
-        f"OPENAI_API_KEY set: {bool(OPENAI_API_KEY)}",
-        language="text"
-    )
+def build_csv_bytes_for_job(job_id: str) -> bytes | None:
+    """Build a CSV in memory for instant download."""
+    rows = supabase.table("translation_items").select("*").eq("job_id", job_id).execute().data or []
+    if not rows:
+        return None
+    df = pd.DataFrame(rows, columns=[
+        "keyword", "category", "subcategory", "product_category",
+        "translated_keyword_1", "translated_keyword_2"
+    ])
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    return buf.getvalue().encode("utf-8")
 
 def translate_keyword_variants(keyword: str, target_lang: str) -> tuple[str,str]:
     if not openai_client:
@@ -151,7 +87,7 @@ def translate_keyword_variants(keyword: str, target_lang: str) -> tuple[str,str]
     user_msg = json.dumps({"keyword": keyword, "target_language": target_lang}, ensure_ascii=False)
     try:
         resp = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # swap to 'gpt-4o' if you prefer
+            model="gpt-4o-mini",
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
@@ -188,33 +124,156 @@ def run_worker_once():
             if t1 or t2:
                 translated += 1
 
-        # Build CSV and upload to Supabase Storage with CORRECT string headers
-        df = pd.DataFrame(
-            supabase.table("translation_items")
-            .select("*").eq("job_id", job_id).execute().data
-        )
-        fname = f"translated_{job_id}.csv"
-        tmp = f"/tmp/{fname}"
-        df.to_csv(tmp, index=False)
-
-        try:
-            with open(tmp, "rb") as f:
-                supabase.storage.from_("translated_files").upload(
-                    f"results/{fname}",
-                    f,
-                    {"contentType": "text/csv", "cacheControl": "3600", "upsert": "true"}
-                )
-            public_url = supabase.storage.from_("translated_files").get_public_url(f"results/{fname}")
-        except Exception as e:
-            public_url = None
-            st.error(f"Storage upload failed: {e}")
+        # Build CSV & upload
+        _ = ensure_storage_link(job_id)
 
         supabase.table("translation_jobs").update({
             "status":"completed",
-            "download_url": public_url
         }).eq("id", job_id).execute()
-        st.success(f"Job `{job_id}` completed. {translated}/{len(rows)} translated. {public_url or ''}")
+        st.success(f"Job `{job_id}` completed. {translated}/{len(rows)} translated.")
 
-with col2:
-    if st.button("▶️ Process queued jobs now"):
-        run_worker_once()
+# ---------- UI ----------
+st.title("🌍 Keyword Translation Tool")
+st.caption(
+    "Upload a CSV with **keyword, category, subcategory, product_category**. "
+    "Only **keyword** is translated into **two variants**; other fields are preserved."
+)
+
+# --- Submission form (with Project) ---
+with st.expander("➕ Submit a new translation job", expanded=True):
+    c1, c2 = st.columns([2,1])
+    with c1:
+        project_name = st.text_input("Project name (used for download later)", placeholder="e.g., September Batch FR")
+    with c2:
+        target_language = st.selectbox(
+            "Target Language",
+            ["Spanish","French","German","Italian","Japanese","Portuguese","Polish","Dutch","Turkish"]
+        )
+
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    st.markdown("Or paste CSV data below:")
+    pasted_data = st.text_area("Paste CSV-formatted data matching the required columns")
+
+    def load_df_from_inputs():
+        if uploaded_file is not None:
+            return pd.read_csv(uploaded_file)
+        if pasted_data.strip():
+            try:
+                return pd.read_csv(StringIO(pasted_data))
+            except Exception:
+                lines = [ln.strip() for ln in pasted_data.splitlines() if ln.strip()]
+                return pd.DataFrame({
+                    "keyword": lines,
+                    "category": ["" for _ in lines],
+                    "subcategory": ["" for _ in lines],
+                    "product_category": ["" for _ in lines],
+                })
+        return None
+
+    df = load_df_from_inputs()
+
+    if df is not None:
+        required = {"keyword","category","subcategory","product_category"}
+        missing = required - set(df.columns)
+        if missing:
+            st.error(f"Missing required columns: {', '.join(sorted(missing))}")
+        else:
+            st.write("Preview:")
+            st.dataframe(df.head(200), width='stretch')
+
+            disabled = not project_name.strip()
+            if st.button("Submit Translation Job", disabled=disabled):
+                job_id = str(uuid.uuid4())
+                submitted_at = datetime.now(timezone.utc).isoformat()
+
+                supabase.table("translation_jobs").insert({
+                    "id": job_id,
+                    "project_name": project_name.strip(),
+                    "status": "queued",
+                    "submitted_at": submitted_at,
+                    "target_language": target_language,
+                }).execute()
+
+                rows = [{
+                    "job_id": job_id,
+                    "keyword": str(r["keyword"]) if pd.notna(r["keyword"]) else "",
+                    "category": str(r["category"]) if pd.notna(r["category"]) else "",
+                    "subcategory": str(r["subcategory"]) if pd.notna(r["subcategory"]) else "",
+                    "product_category": str(r["product_category"]) if pd.notna(r["product_category"]) else "",
+                } for _, r in df.iterrows()]
+
+                for i in range(0, len(rows), 500):
+                    supabase.table("translation_items").insert(rows[i:i+500]).execute()
+
+                st.success(f"✅ Job submitted for project **{project_name}**! Job ID: `{job_id}`")
+
+st.divider()
+
+# --- Project-based download ---
+st.subheader("⬇️ Download by Project")
+
+# Get distinct projects (latest first by submitted_at)
+projects_raw = supabase.rpc(
+    "exec",  # fallback if RPC not allowed; we'll do a simple query approach instead
+).execute()
+
+# Simple distinct via client: fetch recent jobs, then unique by project_name
+jobs_for_projects = (
+    supabase.table("translation_jobs")
+    .select("id,project_name,submitted_at,status,target_language,download_url")
+    .order("submitted_at", desc=True)
+    .limit(200)
+    .execute()
+    .data or []
+)
+
+project_names = [j["project_name"] for j in jobs_for_projects if j.get("project_name")]
+project_names = list(dict.fromkeys(project_names))  # preserve order & dedupe
+
+if not project_names:
+    st.info("No projects found yet. Submit a job above.")
+else:
+    selected_project = st.selectbox("Select project", project_names)
+
+    # Find the latest job for this project
+    proj_jobs = [j for j in jobs_for_projects if j.get("project_name") == selected_project]
+    latest_job = proj_jobs[0] if proj_jobs else None
+
+    if latest_job:
+        st.write(
+            f"Latest job for **{selected_project}** → "
+            f"`{latest_job['id']}` | Status: `{latest_job['status']}` | Lang: {latest_job.get('target_language')}`"
+        )
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if latest_job.get("status") != "completed":
+                st.warning("This job is not completed yet. You can process queued jobs below.")
+            link = latest_job.get("download_url")
+            if link:
+                st.markdown(f"[📥 Download CSV]({link})")
+            else:
+                if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
+                    url = ensure_storage_link(latest_job["id"])
+                    if url:
+                        st.success("Link created!")
+                        st.experimental_rerun()
+
+        with c2:
+            csv_bytes = build_csv_bytes_for_job(latest_job["id"])
+            if csv_bytes:
+                st.download_button(
+                    label="⬇️ Download now (direct)",
+                    data=csv_bytes,
+                    file_name=f"translated_{latest_job['id']}.csv",
+                    mime="text/csv",
+                    key=f"dl_{latest_job['id']}"
+                )
+            else:
+                st.info("No items found for this job.")
+
+st.divider()
+st.subheader("🧪 Debug / Run Worker Inline")
+
+if st.button("▶️ Process queued jobs now"):
+    run_worker_once()
