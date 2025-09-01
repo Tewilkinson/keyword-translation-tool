@@ -44,17 +44,34 @@ if uploaded_file:
     if st.button("Translate Keywords"):
         with st.spinner("Translating..."):
             output_file = run_translation_job(file_path, target_language)
-        st.success(f"Translation completed! File saved to {output_file}")
-        st.download_button("Download Translated File", data=open(output_file, "rb"), file_name=os.path.basename(output_file))
+        st.success(f"Translation completed! File saved to outputs/")
+        st.download_button(
+            "Download Translated File",
+            data=open(output_file, "rb"),
+            file_name=os.path.basename(output_file)
+        )
 
 # ------------------------------
-# Past jobs table
+# Past jobs table with downloads
 # ------------------------------
 st.subheader("Past Translation Jobs")
 if os.path.exists("jobs_log.csv"):
     jobs_df = pd.read_csv("jobs_log.csv")
-    st.dataframe(jobs_df.sort_values("timestamp", ascending=False))
-    csv_bytes = jobs_df.to_csv(index=False).encode("utf-8")
-    st.download_button("Download Jobs Log", csv_bytes, "jobs_log.csv")
+    jobs_df_sorted = jobs_df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+
+    for i, row in jobs_df_sorted.iterrows():
+        col1, col2, col3, col4 = st.columns([3, 3, 2, 2])
+        col1.write(row["timestamp"])
+        col2.write(row["input_file"])
+        col3.write(row["target_language"])
+        output_path = os.path.join("outputs", row["output_file"])
+        if os.path.exists(output_path):
+            col4.download_button(
+                "Download Translated Output",
+                data=open(output_path, "rb"),
+                file_name=row["output_file"]
+            )
+        else:
+            col4.write("File missing")
 else:
     st.info("No past translation jobs found.")
