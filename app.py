@@ -248,7 +248,7 @@ else:
         c1, c2 = st.columns(2)
 
         # Option A: storage link (public or signed)
-    with c1:
+       with c1:
             link = latest_job.get("download_url")
             if link:
                 st.markdown(f"[📥 Download CSV]({link})")
