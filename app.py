@@ -1,89 +1,78 @@
-import os
-import uuid
 import streamlit as st
 import pandas as pd
+import uuid
+import datetime
+import os
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-# --- Constants ---
-JOBS_LOG = "jobs.csv"
-OUTPUT_DIR = "outputs"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+load_dotenv()
 
-# --- Ensure jobs.csv exists and has correct headers ---
-if not os.path.exists(JOBS_LOG) or os.stat(JOBS_LOG).st_size == 0:
-    pd.DataFrame(columns=["job_id", "language", "status", "output_file"]).to_csv(JOBS_LOG, index=False)
+# Supabase setup
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 st.title("🌍 Keyword Translation Tool")
 
-# --- Step 1: Keyword Input ---
-st.subheader("Step 1: Upload or Paste Keywords")
+st.markdown("""
+Upload a CSV file or paste keyword data below. Only `keyword` and `subcategory` will be translated.
+""")
 
-uploaded_file = st.file_uploader("Upload CSV with a 'keyword' column", type=["csv"])
-keywords = []
+# Language selection
+target_language = st.selectbox("Select Target Language", ["Spanish", "French", "German", "Italian", "Japanese"])
 
+# File upload
+uploaded_file = st.file_uploader("Upload CSV (keyword, category, subcategory, product_category)", type=["csv"])
+
+# Paste input
+st.markdown("Or paste CSV data below:")
+pasted_data = st.text_area("Paste CSV-formatted data")
+
+# Handle file or pasted input
+df = None
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
-    if "keyword" not in df.columns:
-        st.error("CSV must contain a 'keyword' column.")
+elif pasted_data:
+    from io import StringIO
+    df = pd.read_csv(StringIO(pasted_data))
+
+if df is not None:
+    expected_cols = {"keyword", "category", "subcategory", "product_category"}
+    if not expected_cols.issubset(df.columns):
+        st.error("Missing required columns. Ensure CSV has: keyword, category, subcategory, product_category.")
     else:
-        keywords = df["keyword"].dropna().tolist()
-else:
-    text_input = st.text_area("Or paste keywords below (one per line)")
-    if text_input:
-        keywords = [k.strip() for k in text_input.split("\n") if k.strip()]
+        st.dataframe(df)
+        if st.button("Submit Translation Job"):
+            job_id = str(uuid.uuid4())
+            submitted_at = datetime.datetime.utcnow().isoformat()
 
-if keywords:
-    st.success(f"{len(keywords)} keywords loaded.")
+            # Create translation job
+            supabase.table("translation_jobs").insert({
+                "id": job_id,
+                "status": "queued",
+                "submitted_at": submitted_at,
+                "target_language": target_language
+            }).execute()
 
-# --- Step 2: Select Target Language ---
-st.subheader("Step 2: Select Target Language")
-language = st.selectbox("Choose a language to translate into:", [
-    "Spanish", "French", "German", "Japanese", "Chinese", "Arabic", "Italian"
-])
+            # Add items to translation_items
+            for _, row in df.iterrows():
+                supabase.table("translation_items").insert({
+                    "job_id": job_id,
+                    "keyword": row["keyword"],
+                    "subcategory": row["subcategory"],
+                    "category": row["category"],
+                    "product_category": row["product_category"],
+                }).execute()
 
-# --- Step 3: Submit Job ---
-if st.button("Submit Translation Job") and keywords:
-    job_id = str(uuid.uuid4())
+            st.success(f"Translation job submitted! Job ID: {job_id}")
 
-    # Save input keywords
-    input_df = pd.DataFrame({"keyword": keywords})
-    input_file = os.path.join(OUTPUT_DIR, f"{job_id}_input.csv")
-    input_df.to_csv(input_file, index=False)
+# Job status viewer
+st.markdown("---")
+st.subheader("📥 View Submitted Jobs")
+jobs = supabase.table("translation_jobs").select("*").order("submitted_at", desc=True).limit(10).execute().data
 
-    # Add job to log
-    job_log_df = pd.read_csv(JOBS_LOG)
-    job_log_df.loc[len(job_log_df)] = [job_id, language, "in_progress", ""]
-    job_log_df.to_csv(JOBS_LOG, index=False)
-
-    st.success(f"✅ Job submitted! Job ID: `{job_id}`. Refresh to check status.")
-
-# --- Job History Viewer ---
-st.subheader("📄 Translation Jobs")
-
-try:
-    job_log_df = pd.read_csv(JOBS_LOG)
-
-    required_cols = {"job_id", "language", "status", "output_file"}
-    if required_cols.issubset(job_log_df.columns):
-        for _, row in job_log_df.iterrows():
-            st.write(f"**Job ID:** {row['job_id']} | Language: {row['language']} | Status: {row['status']}")
-            if row["status"] == "complete" and os.path.exists(row["output_file"]):
-                with open(row["output_file"], "rb") as f:
-                    st.download_button(
-                        label="⬇️ Download Translated File",
-                        data=f,
-                        file_name=os.path.basename(row["output_file"]),
-                        mime="text/csv",
-                        key=row["job_id"]
-                    )
-    else:
-        st.warning("⚠️ `jobs.csv` is missing required columns. Try resetting the file.")
-except Exception as e:
-    st.error(f"Error reading jobs log: {e}")
-
-# --- Optional: Reset jobs.csv ---
-with st.expander("⚠️ Reset Jobs Log"):
-    if st.button("Delete jobs.csv (and start fresh)"):
-        if os.path.exists(JOBS_LOG):
-            os.remove(JOBS_LOG)
-            pd.DataFrame(columns=["job_id", "language", "status", "output_file"]).to_csv(JOBS_LOG, index=False)
-            st.success("Jobs log reset.")
+for job in jobs:
+    st.write(f"🗂️ Job ID: `{job['id']}` | Status: `{job['status']}` | Language: {job['target_language']} | Submitted: {job['submitted_at']}")
+    if job["status"] == "completed" and job.get("download_url"):
+        st.markdown(f"[📄 Download Translated File]({job['download_url']})")
