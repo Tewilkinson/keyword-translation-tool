@@ -109,7 +109,7 @@ def build_csv_bytes_for_job(job_id: str) -> bytes | None:
     return buf_txt.encode("utf-8")
 
 def run_worker_once():
-    """Process all queued jobs inline from the Streamlit UI."""
+    """Process all queued jobs inline from the UI."""
     jobs = supabase.table("translation_jobs").select("*").eq("status", "queued").execute().data or []
     if not jobs:
         st.info("No queued jobs.")
@@ -140,19 +140,19 @@ def run_worker_once():
         }).eq("id", job_id).execute()
         st.success(f"Job `{job_id}` completed. {translated}/{len(rows)} translated.")
 
-# --- UI ---
+# -------------------- UI LAYOUT: TABS --------------------
 
 st.title("🌍 Keyword Translation Tool")
-st.caption(
-    "Upload a CSV with **keyword, category, subcategory, product_category**. "
-    "Only the **keyword** is translated into **two variants**; other fields are preserved."
-)
 
-# --- Submission form (with Project) ---
-with st.expander("➕ Submit a new translation job", expanded=True):
+tab_new, tab_download = st.tabs(["New Job", "Download by Project"])
+
+# -------------------- TAB 1: NEW JOB --------------------
+with tab_new:
+    st.subheader("Submit a new translation job")
+
     c1, c2 = st.columns([2, 1])
     with c1:
-        project_name = st.text_input("Project name (used for download later)", placeholder="e.g., September Batch FR")
+        project_name = st.text_input("Project name", placeholder="e.g., September Batch FR")
     with c2:
         target_language = st.selectbox(
             "Target Language",
@@ -161,7 +161,7 @@ with st.expander("➕ Submit a new translation job", expanded=True):
 
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
     st.markdown("Or paste CSV data below:")
-    pasted_data = st.text_area("Paste CSV-formatted data matching the required columns")
+    pasted_data = st.text_area("Paste CSV-formatted data (keyword,category,subcategory,product_category)")
 
     def load_df_from_inputs():
         if uploaded_file is not None:
@@ -216,53 +216,52 @@ with st.expander("➕ Submit a new translation job", expanded=True):
 
                 st.success(f"✅ Job submitted for project **{project_name}**! Job ID: `{job_id}`")
 
-st.divider()
+    st.markdown("---")
+    st.subheader("Run job")
+    st.caption("This processes any queued jobs and uploads CSVs to Storage.")
+    if st.button("▶️ Process queued jobs now"):
+        run_worker_once()
 
-# --- Project-based download (direct only) ---
-st.subheader("⬇️ Download by Project")
+# ---------------- TAB 2: DOWNLOAD BY PROJECT ----------------
+with tab_download:
+    st.subheader("Download by Project")
 
-jobs_for_projects = (
-    supabase.table("translation_jobs")
-    .select("id,project_name,submitted_at,status,target_language")
-    .order("submitted_at", desc=True)
-    .limit(500)
-    .execute()
-    .data or []
-)
+    jobs_for_projects = (
+        supabase.table("translation_jobs")
+        .select("id,project_name,submitted_at,status,target_language")
+        .order("submitted_at", desc=True)
+        .limit(500)
+        .execute()
+        .data or []
+    )
 
-project_names = [j["project_name"] for j in jobs_for_projects if j.get("project_name")]
-project_names = list(dict.fromkeys(project_names))  # dedupe, keep order
+    project_names = [j["project_name"] for j in jobs_for_projects if j.get("project_name")]
+    project_names = list(dict.fromkeys(project_names))  # dedupe, keep order
 
-if not project_names:
-    st.info("No projects found yet. Submit a job above.")
-else:
-    selected_project = st.selectbox("Select project", project_names)
+    if not project_names:
+        st.info("No projects found yet. Submit a job in the New Job tab.")
+    else:
+        selected_project = st.selectbox("Select project", project_names, key="project_select")
 
-    proj_jobs = [j for j in jobs_for_projects if j.get("project_name") == selected_project]
-    latest_completed = next((j for j in proj_jobs if j.get("status") == "completed"), None)
-    latest_job = latest_completed or (proj_jobs[0] if proj_jobs else None)
+        proj_jobs = [j for j in jobs_for_projects if j.get("project_name") == selected_project]
+        latest_completed = next((j for j in proj_jobs if j.get("status") == "completed"), None)
+        latest_job = latest_completed or (proj_jobs[0] if proj_jobs else None)
 
-    if latest_job:
-        st.write(
-            f"Latest job for **{selected_project}** → "
-            f"`{latest_job['id']}` | Status: `{latest_job['status']}` | "
-            f"Lang: `{latest_job.get('target_language')}`"
-        )
-
-        csv_bytes = build_csv_bytes_for_job(latest_job["id"])
-        if csv_bytes:
-            st.download_button(
-                label="📥 Download CSV",
-                data=csv_bytes,
-                file_name=f"translated_{latest_job['id']}.csv",
-                mime="text/csv",
-                key=f"dl_{latest_job['id']}"
+        if latest_job:
+            st.write(
+                f"Latest job for **{selected_project}** → "
+                f"`{latest_job['id']}` | Status: `{latest_job['status']}` | "
+                f"Lang: `{latest_job.get('target_language')}`"
             )
-        else:
-            st.info("No items found for this job.")
 
-st.divider()
-st.subheader("🧪 Debug / Run Worker Inline")
-
-if st.button("▶️ Process queued jobs now"):
-    run_worker_once()
+            csv_bytes = build_csv_bytes_for_job(latest_job["id"])
+            if csv_bytes:
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv_bytes,
+                    file_name=f"translated_{latest_job['id']}.csv",
+                    mime="text/csv",
+                    key=f"dl_{latest_job['id']}"
+                )
+            else:
+                st.info("No items found for this job.")
