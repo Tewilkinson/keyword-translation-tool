@@ -212,53 +212,56 @@ st.divider()
 # --- Project-based download ---
 st.subheader("⬇️ Download by Project")
 
-# Get distinct projects (latest first by submitted_at)
-projects_raw = supabase.rpc(
-    "exec",  # fallback if RPC not allowed; we'll do a simple query approach instead
-).execute()
-
-# Simple distinct via client: fetch recent jobs, then unique by project_name
+# Pull recent jobs and derive distinct projects (most-recent first)
 jobs_for_projects = (
     supabase.table("translation_jobs")
     .select("id,project_name,submitted_at,status,target_language,download_url")
     .order("submitted_at", desc=True)
-    .limit(200)
+    .limit(500)
     .execute()
     .data or []
 )
 
+# Build project list preserving recency order
 project_names = [j["project_name"] for j in jobs_for_projects if j.get("project_name")]
-project_names = list(dict.fromkeys(project_names))  # preserve order & dedupe
+project_names = list(dict.fromkeys(project_names))  # dedupe, keep order
 
 if not project_names:
     st.info("No projects found yet. Submit a job above.")
 else:
     selected_project = st.selectbox("Select project", project_names)
 
-    # Find the latest job for this project
+    # Jobs for this project, newest first
     proj_jobs = [j for j in jobs_for_projects if j.get("project_name") == selected_project]
-    latest_job = proj_jobs[0] if proj_jobs else None
+
+    # Prefer latest COMPLETED job; fallback to the newest regardless of status
+    latest_completed = next((j for j in proj_jobs if j.get("status") == "completed"), None)
+    latest_job = latest_completed or (proj_jobs[0] if proj_jobs else None)
 
     if latest_job:
         st.write(
             f"Latest job for **{selected_project}** → "
-            f"`{latest_job['id']}` | Status: `{latest_job['status']}` | Lang: {latest_job.get('target_language')}`"
+            f"`{latest_job['id']}` | Status: `{latest_job['status']}` | "
+            f"Lang: `{latest_job.get('target_language')}`"
         )
 
         c1, c2 = st.columns(2)
+
+        # Option A: storage link (public or signed)
         with c1:
-            if latest_job.get("status") != "completed":
-                st.warning("This job is not completed yet. You can process queued jobs below.")
             link = latest_job.get("download_url")
             if link:
                 st.markdown(f"[📥 Download CSV]({link})")
             else:
+                if latest_job.get("status") != "completed":
+                    st.warning("This job is not completed yet. You can process queued jobs below.")
                 if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
                     url = ensure_storage_link(latest_job["id"])
                     if url:
                         st.success("Link created!")
                         st.experimental_rerun()
 
+        # Option C: instant download from DB (works even without storage link)
         with c2:
             csv_bytes = build_csv_bytes_for_job(latest_job["id"])
             if csv_bytes:
