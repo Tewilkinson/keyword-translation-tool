@@ -1,128 +1,47 @@
 import streamlit as st
 import pandas as pd
-from io import BytesIO
 import os
-import sqlite3
-from datetime import datetime
-from pathlib import Path
-from dotenv import load_dotenv
-import subprocess
-
-load_dotenv()
-
-UPLOAD_DIR = "uploads"
-OUTPUT_DIR = "outputs"
-DB_FILE = "jobs.db"
-
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# Initialize SQLite DB
-conn = sqlite3.connect(DB_FILE, check_same_thread=False)
-c = conn.cursor()
-c.execute("""
-CREATE TABLE IF NOT EXISTS jobs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    filename TEXT,
-    target_language TEXT,
-    status TEXT,
-    created_at TEXT,
-    output_file TEXT
-)
-""")
-conn.commit()
+from worker import run_translation_job
 
 st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
-st.title("Keyword Translation Tool - Manual Job Execution 🌐")
 
-# --------------------------
-# Dashboard Scorecards
-# --------------------------
-c.execute("SELECT COUNT(*) FROM jobs")
-total_jobs = c.fetchone()[0]
+# Ensure folders exist
+os.makedirs("uploads", exist_ok=True)
+os.makedirs("outputs", exist_ok=True)
 
-c.execute("SELECT COUNT(*) FROM jobs WHERE status='Completed'")
-completed_jobs = c.fetchone()[0]
+st.title("Keyword Translation Tool")
 
-c.execute("SELECT COUNT(*) FROM jobs WHERE status='Pending'")
-pending_jobs = c.fetchone()[0]
+# -----------------------------
+# Dashboard Score Cards
+# -----------------------------
+uploaded_files = os.listdir("uploads")
+translated_files = os.listdir("outputs")
 
-st.subheader("Job Dashboard")
-col1, col2, col3 = st.columns(3)
-col1.metric("Total Jobs", total_jobs)
-col2.metric("Completed Jobs", completed_jobs)
-col3.metric("Pending Jobs", pending_jobs)
+col1, col2 = st.columns(2)
+col1.metric("Keywords Uploaded", len(uploaded_files))
+col2.metric("Translations Completed", len(translated_files))
 
-# --------------------------
-# Download Template
-# --------------------------
-template_df = pd.DataFrame(columns=["Keyword", "Category", "Subcategory", "Product Category"])
-output_template = BytesIO()
-with pd.ExcelWriter(output_template, engine="openpyxl") as writer:
-    template_df.to_excel(writer, index=False, sheet_name="Keywords")
-output_template.seek(0)
-
-st.download_button(
-    label="📥 Download Excel Template",
-    data=output_template,
-    file_name="keyword_template.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-
-# --------------------------
-# Upload File
-# --------------------------
-uploaded_file = st.file_uploader("Upload your filled Excel file", type=["xlsx"])
-
+# -----------------------------
+# File Upload
+# -----------------------------
+uploaded_file = st.file_uploader("Upload your keyword Excel file", type=["xlsx"])
 target_language = st.selectbox(
-    "Choose a language to translate keywords into",
-    ["Spanish", "French", "German", "Italian", "Portuguese", "Japanese", "Chinese", "Korean", "Russian"]
+    "Select target language",
+    ["French", "German", "Spanish", "Italian", "Chinese", "Japanese"]
 )
 
-if uploaded_file and st.button("Submit Translation Job"):
-    filename = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uploaded_file.name}"
-    filepath = os.path.join(UPLOAD_DIR, filename)
-    with open(filepath, "wb") as f:
+if uploaded_file:
+    file_path = os.path.join("uploads", uploaded_file.name)
+    with open(file_path, "wb") as f:
         f.write(uploaded_file.getbuffer())
-    # Insert job into DB
-    c.execute(
-        "INSERT INTO jobs (filename, target_language, status, created_at) VALUES (?, ?, ?, ?)",
-        (filename, target_language, "Pending", datetime.now().isoformat())
-    )
-    conn.commit()
-    st.success(f"✅ Job submitted! It is now pending execution.")
+    st.success(f"File {uploaded_file.name} uploaded successfully!")
 
-# --------------------------
-# Run Pending Job Manually
-# --------------------------
-st.subheader("Run Pending Translation Job")
-c.execute("SELECT * FROM jobs WHERE status='Pending'")
-pending_jobs_df = pd.DataFrame(c.fetchall(), columns=[desc[0] for desc in c.description])
-
-if not pending_jobs_df.empty:
-    selected_job_id = st.selectbox("Select Job ID to Run", pending_jobs_df['id'])
-    if st.button("Run Selected Job"):
-        subprocess.Popen(["python", "worker.py", str(selected_job_id)])
-        st.info(f"🛠 Job {selected_job_id} started. It will run in background.")
-else:
-    st.info("No pending jobs to run.")
-
-# --------------------------
-# Completed Jobs
-# --------------------------
-st.subheader("Completed Translations")
-c.execute("SELECT * FROM jobs WHERE status='Completed' ORDER BY created_at DESC")
-completed_jobs_df = pd.DataFrame(c.fetchall(), columns=[desc[0] for desc in c.description])
-
-if not completed_jobs_df.empty:
-    st.dataframe(completed_jobs_df)
-    for idx, row in completed_jobs_df.iterrows():
-        if row['output_file']:
-            download_path = os.path.join(OUTPUT_DIR, row['output_file'])
-            if os.path.exists(download_path):
-                st.download_button(
-                    label=f"📥 Download {row['output_file']}",
-                    data=open(download_path, "rb").read(),
-                    file_name=row['output_file'],
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+    if st.button("Submit Translation Job"):
+        with st.spinner("Running translation job..."):
+            output_file = run_translation_job(file_path, target_language)
+        st.success(f"Translation completed! Download file below:")
+        st.download_button(
+            label="Download Translated File",
+            data=open(output_file, "rb"),
+            file_name=os.path.basename(output_file)
+        )
