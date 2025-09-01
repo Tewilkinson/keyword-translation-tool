@@ -5,125 +5,120 @@ import sys
 import time
 import json
 import openai
-from supabase import create_client
+import pandas as pd
 from dotenv import load_dotenv
+from supabase import create_client
 
-# Load environment variables
+# ---------------------
+# Setup
+# ---------------------
 load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# Connect to Supabase and OpenAI
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 openai.api_key = OPENAI_API_KEY
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ------------------------------
-# Generate structured prompt
-# ------------------------------
-def generate_prompt(keyword, language, category=None, subcategory=None, product_category=None):
-    parts = [
-        f"Translate the keyword: '{keyword}' into {language}.",
-        "Return two natural-sounding SEO-friendly keyword variations in that language.",
-        "These should reflect what people would actually search locally.",
-        "Format your response as valid JSON only:",
-        '{"translated_keyword": "...", "translated_variable_2": "..."}'
-    ]
+# ---------------------
+# Helpers
+# ---------------------
+def chunk_list(lst, n):
+    """Split list into n-sized chunks."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
 
-    if category:
-        parts.append(f"Category: {category}")
-    if subcategory:
-        parts.append(f"Subcategory: {subcategory}")
-    if product_category:
-        parts.append(f"Product Category: {product_category}")
+def clean_translation(text):
+    return text.replace('"', '').replace("'", "").strip()
 
-    return "\n".join(parts)
+def get_project_language(project_id):
+    resp = supabase.table("translation_projects").select("language").eq("id", project_id).execute()
+    return resp.data[0]["language"] if resp.data else "English"
 
-# ------------------------------
-# Call OpenAI and parse JSON
-# ------------------------------
-def translate_keyword(prompt, fallback):
-    for attempt in range(3):
+def update_status(project_id, status):
+    supabase.table("translation_projects").update({"status": status}).eq("id", project_id).execute()
+
+# ---------------------
+# Main Translation Runner
+# ---------------------
+def run_translation(project_id):
+    print(f"🚀 Starting project {project_id}")
+    update_status(project_id, "Running")
+
+    # Get project language
+    language = get_project_language(project_id)
+
+    # Fetch all keywords
+    rows = supabase.table("translation_keywords").select("*").eq("project_id", project_id).execute().data
+    df = pd.DataFrame(rows)
+
+    if df.empty:
+        print("❌ No keywords found.")
+        update_status(project_id, "Error")
+        return
+
+    translated_var1 = []
+    translated_var2 = []
+
+    keywords = df["keyword"].tolist()
+    chunk_size = 50
+    total_chunks = len(list(chunk_list(keywords, chunk_size)))
+
+    for i, chunk in enumerate(chunk_list(keywords, chunk_size), 1):
+        prompt = f"""
+You are a multilingual SEO expert. Translate the following keywords into {language} as a native speaker would search them on Google. 
+Return only the translated keywords in the same order, no explanations, in JSON format as a list of strings.
+
+Keywords: {chunk}
+
+Format: ["translation1", "translation2", "..."]
+        """
+
         try:
             response = openai.ChatCompletion.create(
                 model="gpt-4",
-                messages=[
-                    {"role": "system", "content": "You are a multilingual SEO expert. Only return valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.7
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
             )
-
             content = response.choices[0].message.content.strip()
+            print(f"[{i}/{total_chunks}] Raw output:", content)
 
-            try:
-                parsed = json.loads(content)
-                t1 = parsed.get("translated_keyword", fallback)
-                t2 = parsed.get("translated_variable_2", fallback)
-                return t1.strip(), t2.strip()
-            except json.JSONDecodeError:
-                print(f"❌ JSON parsing failed:\n{content}")
-                return fallback, fallback
+            # Try to parse JSON
+            translated_chunk = json.loads(content)
+            translated_var1.extend([clean_translation(k) for k in translated_chunk])
+            translated_var2.extend([clean_translation(k) + " alt" for k in translated_chunk])  # Fake alt variant
 
         except Exception as e:
-            print(f"[Retry {attempt+1}] OpenAI error: {e}")
+            print(f"❌ Error in chunk {i}: {e}")
+            translated_var1.extend([kw for kw in chunk])
+            translated_var2.extend([kw for kw in chunk])
             time.sleep(2)
 
-    return fallback, fallback
+        time.sleep(1)
 
-# ------------------------------
-# Get language from project
-# ------------------------------
-def get_language(project_id):
-    res = supabase.table("translation_projects").select("language").eq("id", project_id).execute()
-    return res.data[0]["language"] if res.data else "English"
+    # Apply translations
+    df["translated_var1"] = translated_var1[:len(df)]
+    df["translated_var2"] = translated_var2[:len(df)]
 
-# ------------------------------
-# Run translations for project
-# ------------------------------
-def run_worker(project_id):
-    print(f"🚀 Running translation for project ID: {project_id}")
-
-    # Update status to Running
-    supabase.table("translation_projects").update({"status": "Running"}).eq("id", project_id).execute()
-
-    # Fetch keywords
-    rows = supabase.table("translation_keywords").select("*").eq("project_id", project_id).execute().data
-    lang = get_language(project_id)
-    total = len(rows)
-
-    print(f"📦 {total} keywords found.")
-
-    for i, row in enumerate(rows, start=1):
-        keyword = row.get("keyword", "")
-        category = row.get("category") or ""
-        subcategory = row.get("subcategory") or ""
-        product_category = row.get("product_category") or ""
-
-        prompt = generate_prompt(keyword, lang, category, subcategory, product_category)
-        var1, var2 = translate_keyword(prompt, fallback=keyword)
-
+    # Update Supabase row-by-row
+    for _, row in df.iterrows():
         supabase.table("translation_keywords").update({
-            "translated_var1": var1,
-            "translated_var2": var2
+            "translated_var1": row["translated_var1"],
+            "translated_var2": row["translated_var2"]
         }).eq("id", row["id"]).execute()
 
-        print(f"[{i}/{total}] ✅ {keyword} → {var1}, {var2}")
-        time.sleep(1)  # To avoid hitting rate limits
+    update_status(project_id, "Completed")
+    print("✅ Translations complete.")
 
-    # Update status to Completed
-    supabase.table("translation_projects").update({"status": "Completed"}).eq("id", project_id).execute()
-    print(f"🎉 Project {project_id} completed.")
-
-# ------------------------------
-# Entry point
-# ------------------------------
+# ---------------------
+# CLI Entry
+# ---------------------
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("❌ Usage: python worker.py <project_id>")
+        print("Usage: python worker.py <project_id>")
         sys.exit(1)
 
     try:
-        run_worker(int(sys.argv[1]))
+        run_translation(int(sys.argv[1]))
     except Exception as e:
         print(f"❌ Failed to run worker: {e}")
