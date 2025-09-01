@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import os
 
 st.set_page_config(page_title="Keyword Project Queue", layout="wide")
 st.title("📊 Keyword Project Queue Tool")
@@ -29,6 +28,15 @@ with tabs[0]:
     )
     project_name = st.text_input("Project Name")
 
+    # Dropdown for target language
+    target_language = st.selectbox(
+        "Select Target Language",
+        options=[
+            "English", "Spanish", "French", "German", "Italian",
+            "Portuguese", "Chinese", "Japanese", "Korean"
+        ]
+    )
+
     if st.button("Submit Project"):
         if not uploaded_file:
             st.error("Please upload a file before submitting.")
@@ -48,7 +56,7 @@ with tabs[0]:
                     keyword_count = len(df)
                     
                     # Generate template file
-                    template_file_name = f"{project_name.replace(' ', '_')}_template.csv"
+                    template_file_name = f"{project_name.replace(' ', '_')}_{target_language}.csv"
                     template_df = pd.DataFrame({
                         "Keyword": df["Keyword"],
                         "Translation": [""] * keyword_count
@@ -60,19 +68,17 @@ with tabs[0]:
                         "Timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                         "Project Name": project_name,
                         "Keyword Count": keyword_count,
+                        "Target Language": target_language,
                         "Status": "Completed",
                         "File": template_file_name
                     })
 
-                    st.success(f"Project '{project_name}' submitted and template generated!")
+                    st.success(f"Project '{project_name}' submitted for {target_language}!")
                     st.download_button(
                         "📥 Download Template",
                         data=open(template_file_name, "rb"),
                         file_name=template_file_name
                     )
-
-            except Exception as e:
-                st.error(f"Error processing file: {e}")
 
 # ----------------------
 # Tab 2: History
@@ -89,4 +95,7 @@ with tabs[1]:
         history_df_display["Download"] = [
             f"[Download](./{row['File']})" for _, row in history_df.iterrows()
         ]
-        st.dataframe(history_df_display[["Timestamp", "Project Name", "Keyword Count", "Status", "Download"]], use_container_width=True)
+        st.dataframe(
+            history_df_display[["Timestamp", "Project Name", "Keyword Count", "Target Language", "Status", "Download"]],
+            use_container_width=True
+        )
