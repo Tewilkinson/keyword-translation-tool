@@ -7,7 +7,6 @@ OUTPUT_DIR = "outputs"
 JOBS_LOG = "jobs.csv"
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def chunk_list(lst, n):
@@ -45,7 +44,7 @@ Return only the translated keywords in the same order, separated by commas.
             yield min(int(i * 100 / total_chunks), 100)
             sleep(0.5)  # prevent rate limits
 
-    # Run the generator
+    # Run the generator to collect all translations
     progress_gen = progress_callback()
     for _ in progress_gen:
         pass
