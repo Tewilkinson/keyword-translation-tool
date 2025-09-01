@@ -80,6 +80,9 @@ with tabs[0]:
                         file_name=template_file_name
                     )
 
+            except Exception as e:
+                st.error(f"Error reading uploaded file: {e}")
+
 # ----------------------
 # Tab 2: History
 # ----------------------
@@ -96,6 +99,4 @@ with tabs[1]:
             f"[Download](./{row['File']})" for _, row in history_df.iterrows()
         ]
         st.dataframe(
-            history_df_display[["Timestamp", "Project Name", "Keyword Count", "Target Language", "Status", "Download"]],
-            use_container_width=True
-        )
+            history_df_display[["Time]()]()
