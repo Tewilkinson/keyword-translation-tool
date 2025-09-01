@@ -16,28 +16,28 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 # -----------------------------
 # Streamlit UI
 # -----------------------------
-st.set_page_config(page_title="Keyword Translation Tool", layout="wide")
-
+st.set_page_config(layout="wide")
 st.title("Keyword Translation Tool")
 
-# Load jobs log
+# Load job logs
 if os.path.exists(JOBS_LOG):
     log_df = pd.read_csv(JOBS_LOG)
 else:
-    log_df = pd.DataFrame(columns=["input_file", "output_file", "translated_to", "total_keywords", "status"])
+    log_df = pd.DataFrame(columns=["input_file", "output_file", "translated_to", "status", "total_keywords"])
 
 # Scorecards
 completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
 total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
+
 col1, col2 = st.columns(2)
 col1.metric("Completed Jobs", completed_jobs)
 col2.metric("Total Keywords Translated", total_keywords)
 
-# Tabs: Translation / History
-tabs = st.tabs(["Translate Keywords", "Historical Jobs"])
+# Tabs
+tabs = st.tabs(["New Translation", "Historical Reports"])
 
 # -----------------------------
-# Tab 1: Translation
+# Tab 1: New Translation
 # -----------------------------
 with tabs[0]:
     st.subheader("Upload Keywords for Translation")
@@ -74,7 +74,7 @@ with tabs[0]:
             )
 
 # -----------------------------
-# Tab 2: Historical Jobs
+# Tab 2: Historical Reports
 # -----------------------------
 with tabs[1]:
     st.subheader("Historical Translation Jobs")
@@ -85,27 +85,28 @@ with tabs[1]:
         if "translated_to" not in display_df.columns:
             display_df["translated_to"] = "N/A"
 
-        # Add inline download links
-        display_df["Download Link"] = display_df["output_file"].apply(
-            lambda f: f"[Download](./outputs/{f})" if os.path.exists(os.path.join(OUTPUT_DIR, f)) else "Missing"
-        )
-
-        # Rename columns safely
-        rename_map = {
+        # Prepare display DataFrame without the download column
+        display_df_display = display_df.rename(columns={
             "input_file": "File Name",
             "translated_to": "Translated To",
             "total_keywords": "Keywords Translated",
             "status": "Status"
-        }
-        display_df = display_df.rename(columns=rename_map)
+        })[["File Name", "Translated To", "Keywords Translated", "Status"]]
 
-        # Reorder columns safely
-        final_cols = ["File Name", "Translated To", "Keywords Translated", "Status", "Download Link"]
-        display_df = display_df[[c for c in final_cols if c in display_df.columns]]
+        st.dataframe(display_df_display, use_container_width=True)
 
-        st.markdown(display_df.to_markdown(index=False), unsafe_allow_html=True)
+        st.markdown("### Downloads")
+        for idx, row in display_df.iterrows():
+            file_path = os.path.join(OUTPUT_DIR, row["output_file"])
+            if os.path.exists(file_path):
+                st.download_button(
+                    label=f"{row['input_file']}",
+                    data=open(file_path, "rb").read(),
+                    file_name=row["output_file"],
+                    key=f"download_{idx}"
+                )
 
-        # Full CSV download
+        # Download full CSV
         st.download_button(
             label="Download Full Historical Report (CSV)",
             data=open(JOBS_LOG, "rb").read(),
