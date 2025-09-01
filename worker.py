@@ -22,12 +22,15 @@ openai.api_key = OPENAI_API_KEY
 # Helper: SEO-friendly translation
 # -------------------------------
 def translate_keyword(keyword: str, language: str):
-    prompt = f (
-You are an SEO expert. Translate the keyword into {language}, but do not translate literally.
-Provide how people would search for this keyword online in {language}.
-Return two variations in JSON: {{"translated_keyword": "...", "translated_variable_2": "..."}}
-Keyword: "{keyword}"
-)
+    # Triple quotes must be closed properly and code should follow after
+    prompt = (
+        f"You are an SEO expert. Translate the keyword into {language}, but do not translate literally.\n"
+        f"Provide how people would search for this keyword online in {language}.\n"
+        f"Return two variations in JSON format:\n"
+        f'{{"translated_keyword": "...", "translated_variable_2": "..."}}\n'
+        f'Keyword: "{keyword}"'
+    )
+
     for attempt in range(2):
         try:
             response = openai.ChatCompletion.create(
@@ -44,6 +47,7 @@ Keyword: "{keyword}"
             time.sleep(1)
             continue
     return keyword, keyword
+
 
 # -------------------------------
 # Main Worker
