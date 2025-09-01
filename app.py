@@ -85,7 +85,7 @@ with tabs[1]:
         if "translated_to" not in display_df.columns:
             display_df["translated_to"] = "N/A"
 
-        # Prepare display DataFrame without the download column
+        # Prepare display DataFrame without download links
         display_df_display = display_df.rename(columns={
             "input_file": "File Name",
             "translated_to": "Translated To",
@@ -95,23 +95,24 @@ with tabs[1]:
 
         st.dataframe(display_df_display, use_container_width=True)
 
-        st.markdown("### Downloads")
-        for idx, row in display_df.iterrows():
-            file_path = os.path.join(OUTPUT_DIR, row["output_file"])
+        # Single download selector
+        st.markdown("### Download Historical Report")
+        selected_file = st.selectbox(
+            "Select a report to download",
+            options=display_df["output_file"].tolist(),
+            format_func=lambda x: x
+        )
+
+        if st.button("Download Selected Report"):
+            file_path = os.path.join(OUTPUT_DIR, selected_file)
             if os.path.exists(file_path):
                 st.download_button(
-                    label=f"{row['input_file']}",
+                    label=f"Download {selected_file}",
                     data=open(file_path, "rb").read(),
-                    file_name=row["output_file"],
-                    key=f"download_{idx}"
+                    file_name=selected_file,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
-
-        # Download full CSV
-        st.download_button(
-            label="Download Full Historical Report (CSV)",
-            data=open(JOBS_LOG, "rb").read(),
-            file_name="translation_jobs_history.csv",
-            mime="text/csv"
-        )
+            else:
+                st.error("File not found. It may have been deleted.")
     else:
         st.info("No translation jobs found yet.")
