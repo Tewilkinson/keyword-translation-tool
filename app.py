@@ -255,11 +255,11 @@ else:
             else:
                 if latest_job.get("status") != "completed":
                     st.warning("This job is not completed yet. You can process queued jobs below.")
-                if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
-                    url = ensure_storage_link(latest_job["id"])
-                    if url:
-                        st.success("Link created!")
-                        st.experimental_rerun()
+               if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
+    url = ensure_storage_link(latest_job["id"])
+    if url:
+        st.success("Link created!")
+        st.rerun()
 
         # Option C: instant download from DB (works even without storage link)
         with c2:
