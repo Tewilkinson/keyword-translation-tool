@@ -80,21 +80,29 @@ with tabs[1]:
     st.subheader("Historical Translation Jobs")
     if not log_df.empty:
         display_df = log_df.copy()
+
+        # Ensure 'translated_to' column exists
+        if "translated_to" not in display_df.columns:
+            display_df["translated_to"] = "N/A"
+
         # Add inline download links
         display_df["Download Link"] = display_df["output_file"].apply(
             lambda f: f"[Download](./outputs/{f})" if os.path.exists(os.path.join(OUTPUT_DIR, f)) else "Missing"
         )
-        # Rename columns for neat display
-        display_df = display_df.rename(columns={
+
+        # Rename columns safely
+        rename_map = {
             "input_file": "File Name",
             "translated_to": "Translated To",
             "total_keywords": "Keywords Translated",
             "status": "Status"
-        })
-        # Reorder columns
-        display_df = display_df[["File Name", "Translated To", "Keywords Translated", "Status", "Download Link"]]
+        }
+        display_df = display_df.rename(columns=rename_map)
 
-        # Display table with markdown links
+        # Reorder columns safely
+        final_cols = ["File Name", "Translated To", "Keywords Translated", "Status", "Download Link"]
+        display_df = display_df[[c for c in final_cols if c in display_df.columns]]
+
         st.markdown(display_df.to_markdown(index=False), unsafe_allow_html=True)
 
         # Full CSV download
