@@ -1,67 +1,107 @@
-import pandas as pd
+# worker.py
 import os
-import re
-from tqdm import tqdm
-from openai import OpenAI
-from dotenv import load_dotenv
-import csv
+import pandas as pd
+import openai
+import time
 from datetime import datetime
 
-load_dotenv()
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-def clean_text(text):
-    """Remove extra quotes from translations"""
-    return re.sub(r'^"|"$', '', str(text))
+UPLOADS_DIR = "uploads"
+OUTPUTS_DIR = "outputs"
+JOBS_LOG = "jobs_log.csv"
 
-def run_translation_job(file_path, target_language):
-    # Load Excel
-    df = pd.read_excel(file_path)
+BATCH_SIZE = 50
+VARIANTS = 2
 
-    # Normalize column names: lowercase and strip spaces
-    df.columns = [col.strip().lower() for col in df.columns]
+def clean_translation(text):
+    if not isinstance(text, str):
+        return text
+    return text.strip().strip('"').strip("'")
 
-    # Ensure required column exists
+def run_translation_job(input_file_path, target_language):
+    df = pd.read_excel(input_file_path)
     if "keyword" not in df.columns:
-        raise ValueError(
-            f"Excel must have a 'keyword' column. Found columns: {df.columns.tolist()}"
-        )
+        raise ValueError("Excel must have a 'keyword' column")
 
-    translated_keywords = []
-    for kw in tqdm(df["keyword"], desc="Translating"):
-        prompt = (
-            f"Translate this keyword into {target_language}. "
-            "Provide 2 translated variants. Respond as comma-separated values."
-            f"\nKeyword: {kw}"
-        )
+    keywords = df["keyword"].tolist()
+    total_keywords = len(keywords)
+    translated_rows = []
 
-        resp = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{"role": "user", "content": prompt}]
-        )
-        text = resp.choices[0].message.content
-        variants = [clean_text(x.strip()) for x in text.split(",")][:2]
-        translated_keywords.append(variants)
+    output_file_name = f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{os.path.basename(input_file_path)}"
+    output_file_path = os.path.join(OUTPUTS_DIR, output_file_name)
 
-    # Create DataFrame
-    translated_df = pd.DataFrame(translated_keywords, columns=["Translation 1", "Translation 2"])
+    # Initialize job log
+    log_entry = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "input_file": os.path.basename(input_file_path),
+        "output_file": output_file_name,
+        "target_language": target_language,
+        "total_keywords": total_keywords,
+        "progress_percent": 0,
+        "status": "Running"
+    }
+    if os.path.exists(JOBS_LOG):
+        log_df = pd.read_csv(JOBS_LOG)
+        log_df = pd.concat([log_df, pd.DataFrame([log_entry])], ignore_index=True)
+    else:
+        log_df = pd.DataFrame([log_entry])
+    log_df.to_csv(JOBS_LOG, index=False)
 
-    # Keep original columns aligned
-    output_df = pd.concat([df.reset_index(drop=True), translated_df], axis=1)
+    for i in range(0, total_keywords, BATCH_SIZE):
+        batch_keywords = keywords[i:i+BATCH_SIZE]
+
+        prompt = f"""
+Translate the following keywords into {target_language}.
+Provide {VARIANTS} distinct translations for each keyword.
+Return the result in the format: keyword | translation1 | translation2
+Here are the keywords:
+"""
+        for kw in batch_keywords:
+            prompt += f"{kw}\n"
+
+        success = False
+        while not success:
+            try:
+                response = openai.ChatCompletion.create(
+                    model="gpt-4",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.5,
+                )
+                output_text = response.choices[0].message.content
+                success = True
+            except openai.error.RateLimitError:
+                print("Rate limit hit, waiting 10 seconds...")
+                time.sleep(10)
+            except Exception as e:
+                print("OpenAI API error:", e)
+                time.sleep(5)
+
+        for line in output_text.splitlines():
+            parts = [clean_translation(p.strip()) for p in line.split("|")]
+            if len(parts) == 1:
+                parts = [parts[0], "", ""]
+            elif len(parts) == 2:
+                parts.append("")
+            translated_rows.append(parts)
+
+        # Update progress in log
+        progress = min(100, int(((i + BATCH_SIZE) / total_keywords) * 100))
+        log_df.loc[log_df['output_file'] == output_file_name, 'progress_percent'] = progress
+        log_df.to_csv(JOBS_LOG, index=False)
+
+    # Build final DataFrame
+    translated_df = pd.DataFrame(translated_rows, columns=["keyword", "translation1", "translation2"])
+    for col in df.columns:
+        if col != "keyword":
+            translated_df[col] = df[col]
 
     # Save output Excel
-    if not os.path.exists("outputs"):
-        os.makedirs("outputs")
-    output_file = os.path.join("outputs", f"translated_{os.path.basename(file_path)}")
-    output_df.to_excel(output_file, index=False)
+    translated_df.to_excel(output_file_path, index=False)
 
-    # Log job to CSV
-    log_file = "jobs_log.csv"
-    file_exists = os.path.exists(log_file)
-    with open(log_file, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["timestamp", "input_file", "output_file", "target_language"])
-        writer.writerow([datetime.now(), os.path.basename(file_path), os.path.basename(output_file), target_language])
+    # Mark job complete
+    log_df.loc[log_df['output_file'] == output_file_name, 'progress_percent'] = 100
+    log_df.loc[log_df['output_file'] == output_file_name, 'status'] = "Completed"
+    log_df.to_csv(JOBS_LOG, index=False)
 
-    return output_file
+    return output_file_path
