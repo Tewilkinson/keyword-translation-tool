@@ -2,13 +2,14 @@ import json
 import os
 import sys
 from datetime import datetime, timezone
+import unicodedata
 
 import pandas as pd
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from openai import OpenAI
 
-# Optional: if this ever runs inside Streamlit, allow secrets fallback
+# Optional: if ever run inside Streamlit, allow secrets fallback
 try:
     import streamlit as st
     HAS_STREAMLIT = True
@@ -40,8 +41,10 @@ if not OPENAI_API_KEY:
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+def nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s) if isinstance(s, str) else s
+
 def translate_keyword_variants(keyword: str, target_lang: str) -> tuple[str, str]:
-    """Ask the model for two variants in strict JSON for robust parsing."""
     system_msg = (
         "You generate two alternative search keyword phrases based on an input keyword, "
         "then translate them into the target language. Return ONLY strict JSON with keys "
@@ -59,8 +62,8 @@ def translate_keyword_variants(keyword: str, target_lang: str) -> tuple[str, str
             response_format={"type": "json_object"},
         )
         data = json.loads(resp.choices[0].message.content)
-        t1 = (data.get("t1") or "").strip()
-        t2 = (data.get("t2") or "").strip()
+        t1 = nfc((data.get("t1") or "").strip())
+        t2 = nfc((data.get("t2") or "").strip())
         return t1, t2
     except Exception as e:
         print(f"❌ OpenAI error for keyword '{keyword}': {e}", file=sys.stderr)
@@ -103,7 +106,7 @@ def main():
             row["translated_keyword_2"] = t2
             translated_rows.append(row)
 
-        # Build CSV and upload (headers MUST be strings)
+        # Build CSV and upload (UTF-8 BOM for Excel)
         df = pd.DataFrame(translated_rows, columns=[
             "keyword", "category", "subcategory", "product_category",
             "translated_keyword_1", "translated_keyword_2"
@@ -111,14 +114,14 @@ def main():
 
         filename = f"translated_{job_id}.csv"
         tmp_path = f"/tmp/{filename}"
-        df.to_csv(tmp_path, index=False)
+        df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
 
         try:
             with open(tmp_path, "rb") as f:
                 supabase.storage.from_("translated_files").upload(
                     f"results/{filename}",
                     f,
-                    {"contentType": "text/csv", "cacheControl": "3600", "upsert": "true"}
+                    {"contentType": "text/csv; charset=utf-8", "cacheControl": "3600", "upsert": "true"}
                 )
             public_url = supabase.storage.from_("translated_files").get_public_url(f"results/{filename}")
         except Exception as e:
