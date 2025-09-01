@@ -1,89 +1,117 @@
+import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime
-from bokeh.models import ColumnDataSource, HTMLTemplateFormatter, TableColumn
-from bokeh.models.widgets import DataTable
+from worker import run_translation_job
 
-# ---------------------------
-# Session storage for history
-# ---------------------------
-if "history" not in st.session_state:
-    st.session_state.history = pd.DataFrame(columns=[
-        "keyword1", "keyword2", "translation1", "translation2", "report_url", "created_at"
-    ])
+# -----------------------------
+# Directories and logs
+# -----------------------------
+UPLOAD_DIR = "uploads"
+OUTPUT_DIR = "outputs"
+JOBS_LOG = "jobs.csv"
 
-# ---------------------------
-# Helper functions
-# ---------------------------
-def render_history_table():
-    df = st.session_state.history
-    if df.empty:
-        st.info("No translation history yet.")
-        return
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    df_display = df.copy()
-    df_display["Delete"] = df_display.index.astype(str)
-
-    source = ColumnDataSource(df_display)
-
-    report_template = """
-    <% if (value) { %>
-    <a href="<%= value %>" target="_blank">Download</a>
-    <% } else { %>
-    -
-    <% } %>
-    """
-
-    delete_template = """
-    <button type="button" onclick="window.dispatchEvent(new CustomEvent('delete_click', {detail: '<%= value %>'}))">Delete</button>
-    """
-
-    columns = [
-        TableColumn(field="keyword1", title="Keyword 1"),
-        TableColumn(field="keyword2", title="Keyword 2"),
-        TableColumn(field="translation1", title="Translation 1"),
-        TableColumn(field="translation2", title="Translation 2"),
-        TableColumn(field="report_url", title="Report", formatter=HTMLTemplateFormatter(template=report_template)),
-        TableColumn(field="Delete", title="Delete", formatter=HTMLTemplateFormatter(template=delete_template)),
-        TableColumn(field="created_at", title="Submitted At")
-    ]
-
-    data_table = DataTable(source=source, columns=columns, width=1000, height=300, sizing_mode="stretch_width")
-    st.bokeh_chart(data_table)
-
-    # Delete buttons below table
-    for idx, row in df.iterrows():
-        if st.button(f"Delete '{row['keyword1']}, {row['keyword2']}'", key=f"del_{idx}"):
-            st.session_state.history.drop(idx, inplace=True)
-            st.session_state.history.reset_index(drop=True, inplace=True)
-            st.experimental_rerun()
-
-# ---------------------------
+# -----------------------------
 # Streamlit UI
-# ---------------------------
+# -----------------------------
+st.set_page_config(layout="wide")
 st.title("Keyword Translation Tool")
 
-tabs = st.tabs(["Run Translation", "History"])
+# Load job logs
+if os.path.exists(JOBS_LOG):
+    log_df = pd.read_csv(JOBS_LOG)
+else:
+    log_df = pd.DataFrame(columns=["input_file", "output_file", "translated_to", "status", "total_keywords"])
 
+# Scorecards
+completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
+total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
+
+col1, col2 = st.columns(2)
+col1.metric("Completed Jobs", completed_jobs)
+col2.metric("Total Keywords Translated", total_keywords)
+
+# Tabs
+tabs = st.tabs(["New Translation", "Historical Reports"])
+
+# -----------------------------
+# Tab 1: New Translation
+# -----------------------------
 with tabs[0]:
-    st.header("Upload Keywords for Translation")
-    uploaded_file = st.file_uploader("Upload CSV with columns: keyword1, keyword2", type=["csv"])
+    st.subheader("Upload Keywords for Translation")
+    uploaded_file = st.file_uploader(
+        "Upload Excel file with columns: keyword, category, subcategory, product_category",
+        type=["xlsx"]
+    )
+
+    target_language = st.selectbox(
+        "Select target language",
+        ["French", "Spanish", "German", "Italian", "Chinese"]
+    )
+
     if uploaded_file:
-        input_df = pd.read_csv(uploaded_file)
-        st.dataframe(input_df.head())
+        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success(f"File {uploaded_file.name} uploaded successfully.")
 
-        if st.button("Run Translation"):
-            # Replace this with your actual translation logic
-            translated_df = input_df.copy()
-            translated_df["translation1"] = translated_df["keyword1"] + "_translated"
-            translated_df["translation2"] = translated_df["keyword2"] + "_translated"
-            translated_df["report_url"] = ""  # Add links if you generate downloadable reports
-            translated_df["created_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        if st.button("Translate"):
+            progress_bar = st.progress(0)
+            output_file, progress_callback = run_translation_job(file_path, target_language)
 
-            # Append to session history
-            st.session_state.history = pd.concat([translated_df, st.session_state.history], ignore_index=True)
-            st.success("Translation completed and added to history!")
+            # Iterate progress generator
+            for pct in progress_callback():
+                progress_bar.progress(pct)
 
+            st.success(f"Translation complete: {output_file}")
+            st.download_button(
+                "Download Translated Keywords",
+                data=open(output_file, "rb").read(),
+                file_name=os.path.basename(output_file),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+# -----------------------------
+# Tab 2: Historical Reports
+# -----------------------------
 with tabs[1]:
-    st.header("Translation History")
-    render_history_table()
+    st.subheader("Historical Translation Jobs")
+    if not log_df.empty:
+        display_df = log_df.copy()
+
+        # Ensure 'translated_to' column exists
+        if "translated_to" not in display_df.columns:
+            display_df["translated_to"] = "N/A"
+
+        # Prepare display DataFrame without the download column
+        display_df_display = display_df.rename(columns={
+            "input_file": "File Name",
+            "translated_to": "Translated To",
+            "total_keywords": "Keywords Translated",
+            "status": "Status"
+        })[["File Name", "Translated To", "Keywords Translated", "Status"]]
+
+        st.dataframe(display_df_display, use_container_width=True)
+
+        st.markdown("### Downloads")
+        for idx, row in display_df.iterrows():
+            file_path = os.path.join(OUTPUT_DIR, row["output_file"])
+            if os.path.exists(file_path):
+                st.download_button(
+                    label=f"{row['input_file']}",
+                    data=open(file_path, "rb").read(),
+                    file_name=row["output_file"],
+                    key=f"download_{idx}"
+                )
+
+        # Download full CSV
+        st.download_button(
+            label="Download Full Historical Report (CSV)",
+            data=open(JOBS_LOG, "rb").read(),
+            file_name="translation_jobs_history.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No translation jobs found yet.")
