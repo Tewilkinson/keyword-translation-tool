@@ -1,107 +1,74 @@
+import os
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from worker import run_translation_job
 
-st.set_page_config(page_title="Keyword Project Queue", layout="wide")
-st.title("📊 Keyword Project Queue Tool")
+# -----------------------------
+# Directories and logs
+# -----------------------------
+UPLOAD_DIR = "uploads"
+OUTPUT_DIR = "outputs"
+JOBS_LOG = "jobs.csv"
 
-# ----------------------
-# Session State for Projects
-# ----------------------
-if "projects" not in st.session_state:
-    st.session_state.projects = []
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ----------------------
-# Tabs
-# ----------------------
-tabs = st.tabs(["Upload Project", "History"])
+# -----------------------------
+# Streamlit UI
+# -----------------------------
+st.title("Keyword Translation Tool")
 
-# ----------------------
-# Tab 1: Upload Project
-# ----------------------
-with tabs[0]:
-    st.header("📤 Upload Keyword Project")
+# Scorecards
+if os.path.exists(JOBS_LOG):
+    log_df = pd.read_csv(JOBS_LOG)
+else:
+    log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
 
-    uploaded_file = st.file_uploader(
-        "Upload a CSV or Excel file with a 'Keyword' column",
-        type=["csv", "xlsx"]
-    )
-    project_name = st.text_input("Project Name")
+completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
+total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
 
-    # Dropdown for target language
-    target_language = st.selectbox(
-        "Select Target Language",
-        options=[
-            "English", "Spanish", "French", "German", "Italian",
-            "Portuguese", "Chinese", "Japanese", "Korean"
-        ]
-    )
+col1, col2 = st.columns(2)
+col1.metric("Completed Jobs", completed_jobs)
+col2.metric("Total Keywords Translated", total_keywords)
 
-    if st.button("Submit Project"):
-        if not uploaded_file:
-            st.error("Please upload a file before submitting.")
-        elif not project_name:
-            st.error("Please enter a project name.")
-        else:
-            # Load file just to count keywords
-            try:
-                if uploaded_file.name.endswith(".csv"):
-                    df = pd.read_csv(uploaded_file)
-                else:
-                    df = pd.read_excel(uploaded_file)
+st.subheader("Upload Keywords for Translation")
+uploaded_file = st.file_uploader("Upload Excel file with columns: keyword, category, subcategory, product_category", type=["xlsx"])
 
-                if "Keyword" not in df.columns:
-                    st.error("Uploaded file must have a 'Keyword' column.")
-                else:
-                    keyword_count = len(df)
-                    
-                    # Generate template file
-                    template_file_name = f"{project_name.replace(' ', '_')}_{target_language}.csv"
-                    template_df = pd.DataFrame({
-                        "Keyword": df["Keyword"],
-                        "Translation": [""] * keyword_count
-                    })
-                    template_df.to_csv(template_file_name, index=False)
+target_language = st.selectbox("Select target language", ["French", "Spanish", "German", "Italian", "Chinese"])
 
-                    # Add to projects queue
-                    st.session_state.projects.append({
-                        "Timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
-                        "Project Name": project_name,
-                        "Keyword Count": keyword_count,
-                        "Target Language": target_language,
-                        "Status": "Completed",
-                        "File": template_file_name
-                    })
+if uploaded_file:
+    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    st.success(f"File {uploaded_file.name} uploaded successfully.")
 
-                    st.success(f"Project '{project_name}' submitted for {target_language}!")
-                    st.download_button(
-                        "📥 Download Template",
-                        data=open(template_file_name, "rb"),
-                        file_name=template_file_name
-                    )
+    if st.button("Translate"):
+        progress_bar = st.progress(0)
+        output_file, progress_callback = run_translation_job(file_path, target_language)
 
-            except Exception as e:
-                st.error(f"Error reading uploaded file: {e}")
+        # Iterate progress generator
+        for pct in progress_callback():
+            progress_bar.progress(pct)
 
-# ----------------------
-# Tab 2: History
-# ----------------------
-with tabs[1]:
-    st.header("📜 Historical Projects")
+        st.success(f"Translation complete: {output_file}")
+        st.download_button(
+            "Download Translated Keywords",
+            data=open(output_file, "rb").read(),
+            file_name=os.path.basename(output_file),
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
-    if not st.session_state.projects:
-        st.info("No projects submitted yet.")
-    else:
-        history_df = pd.DataFrame(st.session_state.projects)
-        # Show table with download buttons
-        st.write("Here is your historical project log:")
-        for i, row in history_df.iterrows():
-            st.write(
-                f"**{row['Project Name']}** | Keywords: {row['Keyword Count']} | Language: {row['Target Language']} | Status: {row['Status']}"
-            )
+st.subheader("Historical Translation Jobs")
+if not log_df.empty:
+    st.dataframe(log_df)
+    for idx, row in log_df.iterrows():
+        out_file = os.path.join(OUTPUT_DIR, row["output_file"])
+        if os.path.exists(out_file):
             st.download_button(
-                "📥 Download File",
-                data=open(row['File'], "rb"),
-                file_name=row['File'],
-                key=f"download_{i}"
+                label=f"Download {row['output_file']}",
+                data=open(out_file, "rb").read(),
+                file_name=row["output_file"],
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
+else:
+    st.info("No translation jobs found yet.")
