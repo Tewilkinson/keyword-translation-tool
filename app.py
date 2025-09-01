@@ -1,92 +1,109 @@
 # app.py
 import streamlit as st
 import pandas as pd
+from supabase import create_client
 import os
-from supabase import create_client, Client
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+# -------------------------------
+# Streamlit page config
+# -------------------------------
+st.set_page_config(page_title="SEO Keyword Translator", layout="wide")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# -------------------------------
+# Supabase connection
+# -------------------------------
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# -----------------------------
-# Upload Tab
-# -----------------------------
-st.title("Keyword Translation Tool")
-tab1, tab2 = st.tabs(["Upload & Create Project", "Historical Projects"])
+# -------------------------------
+# Tabs
+# -------------------------------
+tab1, tab2 = st.tabs(["Upload Keywords", "Dashboard"])
 
+# -------------------------------
+# Tab 1: Upload Keywords
+# -------------------------------
 with tab1:
     st.header("Upload Your Keyword File")
+    st.markdown(
+        """
+        Upload an Excel file with the following columns:
+        - keyword
+        - category
+        - subcategory
+        - product_category
+        
+        After uploading, select your target language and create a project.
+        """
+    )
 
-    template_df = pd.DataFrame({
-        "keyword": [],
-        "category": [],
-        "subcategory": [],
-        "product_category": []
-    })
-    st.download_button("Download Template", template_df.to_csv(index=False), file_name="keyword_template.csv")
+    uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
+    language = st.selectbox(
+        "Select Target Language",
+        ["French", "German", "Spanish", "Italian", "Portuguese", "Dutch"]
+    )
 
-    uploaded_file = st.file_uploader("Upload Excel or CSV", type=["csv", "xlsx"])
-    if uploaded_file is not None:
-        if uploaded_file.name.endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file)
-        st.dataframe(df.head())
+    project_name = st.text_input("Project Name", value="New Project")
 
-        language = st.selectbox("Select Target Language", ["French", "German", "Spanish", "Chinese", "Japanese"])
-        project_name = st.text_input("Project Name", "My Translation Project")
+    if uploaded_file and st.button("Create Project"):
+        try:
+            df = pd.read_excel(uploaded_file, engine="openpyxl")
+            required_columns = ["keyword", "category", "subcategory", "product_category"]
+            if not all(col in df.columns for col in required_columns):
+                st.error(f"Uploaded file must contain columns: {required_columns}")
+            else:
+                # Insert project into Supabase
+                project_resp = supabase.table("translation_projects").insert({
+                    "project_name": project_name,
+                    "language": language,
+                    "status": "pending"
+                }).execute()
 
-        if st.button("Create Project"):
-            # 1️⃣ Create project
-            project_resp = supabase.table("translation_projects").insert({
-                "project_name": project_name,
-                "language": language,
-                "status": "pending"
-            }).execute()
-            project_id = project_resp.data[0]["id"]
-            st.success(f"Project created! ID: {project_id}")
+                project_id = project_resp.data[0]["id"]
 
-            # 2️⃣ Insert rows with null translations
-            rows = []
-            for _, row in df.iterrows():
-                rows.append({
-                    "project_id": project_id,
-                    "keyword": row.get("keyword"),
-                    "category": row.get("category"),
-                    "subcategory": row.get("subcategory"),
-                    "product_category": row.get("product_category"),
-                    "translated_keyword": None,
-                    "translated_variable_2": None
-                })
-            supabase.table("translations").insert(rows).execute()
-            st.success(f"{len(rows)} keywords inserted. Run worker.py manually with this project ID to translate.")
+                # Insert all keywords into translations table (empty translations)
+                for _, row in df.iterrows():
+                    supabase.table("translations").insert({
+                        "project_id": project_id,
+                        "keyword": row["keyword"],
+                        "category": row["category"],
+                        "subcategory": row["subcategory"],
+                        "product_category": row["product_category"],
+                        "translated_keyword": None,
+                        "translated_variable_2": None
+                    }).execute()
 
-# -----------------------------
-# Historical Tab
-# -----------------------------
+                st.success(f"Project '{project_name}' created! Project ID: {project_id}")
+                st.info("Run worker.py with this Project ID to perform translations in the background.")
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+
+# -------------------------------
+# Tab 2: Dashboard
+# -------------------------------
 with tab2:
-    st.header("Historical Projects")
-    projects_resp = supabase.table("translation_projects").select("*").order("created_at", desc=True).execute()
-    projects = projects_resp.data
+    st.header("Projects Dashboard")
 
-    if projects:
-        for project in projects:
-            st.subheader(f"{project['project_name']} ({project['language']}) - Status: {project['status']}")
-            col1, col2 = st.columns([1, 1])
-            with col1:
-                if st.button(f"Download {project['project_name']}", key=f"download_{project['id']}"):
-                    translations_resp = supabase.table("translations").select("*").eq("project_id", project['id']).execute()
-                    translations_df = pd.DataFrame(translations_resp.data)
-                    st.download_button(
-                        "Download CSV",
-                        translations_df.to_csv(index=False),
-                        file_name=f"{project['project_name']}_translations.csv"
-                    )
-            with col2:
-                if st.button(f"Delete {project['project_name']}", key=f"delete_{project['id']}"):
-                    supabase.table("translation_projects").delete().eq("id", project['id']).execute()
-                    st.success(f"Project {project['project_name']} deleted!")
-                    st.experimental_rerun()
-    else:
-        st.info("No projects found.")
+    try:
+        # Total projects
+        projects_resp = supabase.table("translation_projects").select("*").execute()
+        projects = projects_resp.data
+        total_projects = len(projects)
+
+        # Total translations done
+        translations_resp = supabase.table("translations").select("*").execute()
+        translations = translations_resp.data
+        total_translations = sum(1 for t in translations if t.get("translated_keyword"))
+
+        col1, col2 = st.columns(2)
+        col1.metric("Total Projects", total_projects)
+        col2.metric("Total Translations Completed", total_translations)
+
+        st.markdown("---")
+        st.subheader("Recent Projects")
+        recent_projects = sorted(projects, key=lambda x: x["created_at"], reverse=True)[:10]
+        for p in recent_projects:
+            st.write(f"Project: **{p['project_name']}**, Language: {p['language']}, Status: {p['status']}, Created: {p['created_at']}")
+    except Exception as e:
+        st.error(f"Error fetching dashboard data: {e}")
