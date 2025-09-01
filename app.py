@@ -1,122 +1,103 @@
-# app.py
-
+import os
 import streamlit as st
 import pandas as pd
-import io
-import os
-from supabase import create_client
-from datetime import datetime
-from dotenv import load_dotenv
+from worker import run_translation_job
 
-# Load secrets or env vars
-load_dotenv()
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# -----------------------------
+# Directories and logs
+# -----------------------------
+UPLOAD_DIR = "uploads"
+OUTPUT_DIR = "outputs"
+JOBS_LOG = "jobs.csv"
 
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-# ----------------------------
-# Tab 1 – Upload & Translate
-# ----------------------------
-def upload_tab():
-    st.header("📤 Upload Keywords for Translation")
+# -----------------------------
+# Load historical jobs
+# -----------------------------
+if os.path.exists(JOBS_LOG):
+    log_df = pd.read_csv(JOBS_LOG)
+else:
+    log_df = pd.DataFrame(columns=["input_file", "output_file", "status", "total_keywords"])
 
-    # Downloadable template
-    with st.expander("📄 Download Template"):
-        output = io.BytesIO()
-        df_template = pd.DataFrame({
-            "keyword": [],
-            "category": [],
-            "subcategory": [],
-            "product_category": []
-        })
-        df_template.to_excel(output, index=False, engine="openpyxl")
-        output.seek(0)
-        st.download_button("Download Excel Template", data=output, file_name="keyword_template.xlsx")
+# -----------------------------
+# Streamlit UI Tabs
+# -----------------------------
+st.title("Keyword Translation Tool")
+tabs = st.tabs(["Translate Keywords", "Historical Reports"])
 
-    uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
-    language = st.selectbox("Select target translation language", ["French", "German", "Spanish", "Japanese", "Korean", "Arabic"])
-    project_name = st.text_input("Enter a project name")
-    
-    if uploaded_file and project_name and language:
-        df = pd.read_excel(uploaded_file)
-        if "keyword" not in df.columns:
-            st.error("❌ 'keyword' column is required.")
-            return
-        
-        st.success(f"{len(df)} keywords ready. Click below to create project.")
-
-        if st.button("✅ Create Project"):
-            try:
-                df = df.fillna("")
-                total = len(df)
-                project_resp = supabase.table("translation_projects").insert({
-                    "name": project_name,
-                    "language": language,
-                    "total_keywords": total,
-                    "status": "Pending"
-                }).execute()
-
-                project_id = project_resp.data[0]['id']
-
-                rows = [{
-                    "project_id": project_id,
-                    "keyword": row["keyword"],
-                    "category": row.get("category", ""),
-                    "subcategory": row.get("subcategory", ""),
-                    "product_category": row.get("product_category", "")
-                } for _, row in df.iterrows()]
-
-                supabase.table("translation_keywords").insert(rows).execute()
-                st.success(f"✅ Project '{project_name}' created with {total} keywords.")
-            except Exception as e:
-                st.error(f"Error creating project: {e}")
-
-# ----------------------------
-# Tab 2 – Dashboard
-# ----------------------------
-def dashboard_tab():
-    st.header("📊 Project Dashboard")
-
-    result = supabase.table("translation_projects").select("*").order("created_at", desc=True).execute()
-    projects = result.data or []
-
-    if not projects:
-        st.info("No projects found.")
-        return
-
-    for project in projects:
-        st.subheader(f"📁 {project['name']}")
-        st.markdown(f"**Language:** {project['language']}  |  **Status:** {project['status']}  |  **Total Keywords:** {project['total_keywords']}  |  Created: {project['created_at'][:10]}")
-
-        col1, col2 = st.columns([1, 1])
-
-        with col1:
-            if st.button(f"⬇️ Download – {project['name']}", key=f"dl_{project['id']}"):
-                rows = supabase.table("translation_keywords").select("*").eq("project_id", project['id']).execute().data
-                df = pd.DataFrame(rows)
-                if not df.empty:
-                    output = io.BytesIO()
-                    df.to_excel(output, index=False, engine="openpyxl")
-                    output.seek(0)
-                    st.download_button("Download Translations", data=output, file_name=f"{project['name']}_translations.xlsx", key=f"db_{project['id']}")
-                else:
-                    st.warning("No translations found.")
-
-        with col2:
-            if st.button(f"🗑 Delete – {project['name']}", key=f"del_{project['id']}"):
-                supabase.table("translation_projects").delete().eq("id", project['id']).execute()
-                st.warning(f"Deleted project: {project['name']}")
-                st.experimental_rerun()
-
-# ----------------------------
-# Main UI
-# ----------------------------
-st.set_page_config(page_title="Keyword Translator", layout="wide")
-tabs = st.tabs(["📤 Upload", "📊 Dashboard"])
-
+# -----------------------------
+# Tab 1: Translate Keywords
+# -----------------------------
 with tabs[0]:
-    upload_tab()
+    # Scorecards
+    completed_jobs = len(log_df[log_df["status"] == "Completed"]) if not log_df.empty else 0
+    total_keywords = log_df["total_keywords"].sum() if not log_df.empty else 0
+
+    col1, col2 = st.columns(2)
+    col1.metric("Completed Jobs", completed_jobs)
+    col2.metric("Total Keywords Translated", total_keywords)
+
+    st.subheader("Upload Keywords for Translation")
+    uploaded_file = st.file_uploader(
+        "Upload Excel file with columns: keyword, category, subcategory, product_category", 
+        type=["xlsx"]
+    )
+
+    target_language = st.selectbox(
+        "Select target language", 
+        ["French", "Spanish", "German", "Italian", "Chinese"]
+    )
+
+    if uploaded_file:
+        file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        st.success(f"File {uploaded_file.name} uploaded successfully.")
+
+        if st.button("Translate"):
+            progress_bar = st.progress(0)
+            output_file, progress_callback = run_translation_job(file_path, target_language)
+
+            # Iterate progress generator
+            for pct in progress_callback():
+                progress_bar.progress(pct)
+
+            st.success(f"Translation complete: {output_file}")
+            st.download_button(
+                "Download Translated Keywords",
+                data=open(output_file, "rb").read(),
+                file_name=os.path.basename(output_file),
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+# -----------------------------
+# Tab 2: Historical Reports
+# -----------------------------
 with tabs[1]:
-    dashboard_tab()
+    st.subheader("Historical Translation Jobs")
+
+    if not log_df.empty:
+        st.dataframe(log_df)
+
+        # Individual downloads
+        for idx, row in log_df.iterrows():
+            out_file = os.path.join(OUTPUT_DIR, row["output_file"])
+            if os.path.exists(out_file):
+                st.download_button(
+                    label=f"Download {row['output_file']}",
+                    data=open(out_file, "rb").read(),
+                    file_name=row["output_file"],
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+
+        # Download full historical CSV
+        st.download_button(
+            label="Download Full Historical Report (CSV)",
+            data=open(JOBS_LOG, "rb").read(),
+            file_name="translation_jobs_history.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No translation jobs found yet.")
