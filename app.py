@@ -215,7 +215,7 @@ st.subheader("⬇️ Download by Project")
 # Pull recent jobs and derive distinct projects (most-recent first)
 jobs_for_projects = (
     supabase.table("translation_jobs")
-    .select("id,project_name,submitted_at,status,target_language,download_url")
+    .select("id,project_name,submitted_at,status,target_language")
     .order("submitted_at", desc=True)
     .limit(500)
     .execute()
@@ -245,35 +245,19 @@ else:
             f"Lang: `{latest_job.get('target_language')}`"
         )
 
-        c1, c2 = st.columns(2)
+        # Only show the direct download button
+        csv_bytes = build_csv_bytes_for_job(latest_job["id"])
+        if csv_bytes:
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv_bytes,
+                file_name=f"translated_{latest_job['id']}.csv",
+                mime="text/csv",
+                key=f"dl_{latest_job['id']}"
+            )
+        else:
+            st.info("No items found for this job.")
 
-        # Option A: storage link (public or signed)
-        with c1:
-            link = latest_job.get("download_url")
-            if link:
-                st.markdown(f"[📥 Download CSV]({link})")
-            else:
-                if latest_job.get("status") != "completed":
-                    st.warning("This job is not completed yet. You can process queued jobs below.")
-                if st.button("Generate Storage Link", key=f"genlink_{latest_job['id']}"):
-                    url = ensure_storage_link(latest_job["id"])
-                    if url:
-                        st.success("Link created!")
-                        st.rerun()
-
-        # Option C: instant download from DB (works even without storage link)
-        with c2:
-            csv_bytes = build_csv_bytes_for_job(latest_job["id"])
-            if csv_bytes:
-                st.download_button(
-                    label="⬇️ Download now (direct)",
-                    data=csv_bytes,
-                    file_name=f"translated_{latest_job['id']}.csv",
-                    mime="text/csv",
-                    key=f"dl_{latest_job['id']}"
-                )
-            else:
-                st.info("No items found for this job.")
 
 st.divider()
 st.subheader("🧪 Debug / Run Worker Inline")
